@@ -17,7 +17,6 @@
       <EmscriptenFiles Remove="$(ProjectDir)\.packages\**" />
       <EmscriptenFiles Remove="$(ProjectDir)\site\**" />
       <EmscriptenFiles Remove="$(ProjectDir)\**\*.pyc" />
-      <EmscriptenFiles Include="$(ProjectDir)\.emscripten" />
     </ItemGroup>
    <Copy SourceFiles="@(EmscriptenFiles)"
       DestinationFiles="@(EmscriptenFiles->'$(EmscriptenInstallDir)\%(RecursiveDir)%(Filename)%(Extension)')" />
