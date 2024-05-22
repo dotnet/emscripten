@@ -1193,8 +1193,10 @@ def phase_linker_setup(options, state, newargs):
     settings.POLYFILL_OLD_MATH_FUNCTIONS = 0
 
   if settings.STB_IMAGE and final_suffix in EXECUTABLE_ENDINGS:
-    state.forced_stdlibs.append('libstb_image')
-    settings.EXPORTED_FUNCTIONS += ['_stbi_load', '_stbi_load_from_memory', '_stbi_image_free']
+    # DOTNET: disable stb_image
+    # state.forced_stdlibs.append('libstb_image')
+    # settings.EXPORTED_FUNCTIONS += ['_stbi_load', '_stbi_load_from_memory', '_stbi_image_free']
+    exit_with_error('STB_IMAGE is not supported with dotnet emscripten packages!')
 
   if settings.USE_WEBGL2:
     settings.MAX_WEBGL_VERSION = 2
