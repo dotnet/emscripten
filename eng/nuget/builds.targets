@@ -28,4 +28,15 @@
       <ProjectReference Include="@(_projectsToBuild)" />
     </ItemGroup>
   </Target>
+
+  <Target Name="UpdateVersionFile" BeforeTargets="Build">
+    <ReadLinesFromFile File="$(MSBuildThisFileDirectory)\..\..\emscripten-version.txt">
+      <Output TaskParameter="Lines" PropertyName="_OriginalEmscriptenVersion" />
+    </ReadLinesFromFile>
+    <WriteLinesToFile
+      File="$(MSBuildThisFileDirectory)\..\emscripten-version.txt"
+      Lines="&quot;$(_OriginalEmscriptenVersion.Replace('-git', ''))&quot;"
+      Overwrite="true"
+       />
+  </Target>
 </Project>
