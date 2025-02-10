@@ -25,7 +25,7 @@ emscripten_license = '''\
 #   Copyright 2017 The Emscripten Authors
 #   SPDX-License-Identifier: MIT
 #  */
-emscripten_license_regex = r'\/\*\*?(\s*\*?\s*@license)?(\s*\*?\s*Copyright \d+ The Emscripten Authors\s*\*?\s*SPDX-License-Identifier: MIT)+\s*\*\/\s*'
+emscripten_license_regex = r'/\*\*?(?:\s*\*?\s*@license)?(?:\s*\*?\s*Copyright \d+ The Emscripten Authors\s*\*?\s*SPDX-License-Identifier: MIT){1,}\s*\*\/\s*'
 
 
 def add_files_pre_js(pre_js_list, files_pre_js):
