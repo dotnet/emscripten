@@ -26,7 +26,7 @@ extends:
         compiled:
           enabled: false
         runSourceLanguagesInSourceAnalysis: true
-        sourceLanguages: javascript
+        sourceLanguages: javascript, python
         binaryLanguages: csharp
       tsa:
         enabled: true
