@@ -25,6 +25,7 @@ emscripten_license = '''\
 #   Copyright 2017 The Emscripten Authors
 #   SPDX-License-Identifier: MIT
 #  */
+# CodeQL [SM03905] This regex is safe for our use case since it only runs on source code in the repo
 emscripten_license_regex = r'/\*\*?(?:\s*\*?\s*@license)?(?:\s*\*?\s*Copyright \d+ The Emscripten Authors\s*\*?\s*SPDX-License-Identifier: MIT){1,}\s*\*\/\s*'
 
 
