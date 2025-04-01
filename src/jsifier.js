@@ -529,6 +529,7 @@ function(${args}) {
       if (isFunction) {
         // Emit the body of a JS library function.
         if ((USE_ASAN || USE_LSAN || UBSAN_RUNTIME) && LibraryManager.library[symbol + '__noleakcheck']) {
+          // CodeQL [js/bad-code-sanitization]: this is safe for dotnet since we don't expose ASAN/LSAN/UBSAN options and those shouldn't be used in production
           contentText = modifyJSFunction(snippet, (args, body) => `(${args}) => withBuiltinMalloc(() => {${body}})`);
           deps.push('$withBuiltinMalloc');
         } else {
