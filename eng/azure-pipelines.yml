@@ -24,10 +24,8 @@ extends:
     sdl:
       codeql:
         compiled:
-          enabled: false
+          buildmode: none
         runSourceLanguagesInSourceAnalysis: true
-        sourceLanguages: javascript, python
-        binaryLanguages: csharp
       tsa:
         enabled: true
       policheck:
