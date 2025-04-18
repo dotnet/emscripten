@@ -23,7 +23,6 @@ extends:
   parameters:
     sdl:
       codeql:
-        compiled:
          compiled:
            enabled: true
          runSourceLanguagesInSourceAnalysis: true
