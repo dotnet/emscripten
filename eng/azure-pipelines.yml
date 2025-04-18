@@ -24,8 +24,11 @@ extends:
     sdl:
       codeql:
         compiled:
-          buildmode: none
-        runSourceLanguagesInSourceAnalysis: true
+         compiled:
+           enabled: true
+         runSourceLanguagesInSourceAnalysis: true
+         sourceLanguages: javascript, python
+         binaryLanguages: csharp, cpp
       tsa:
         enabled: true
       policheck:
@@ -62,6 +65,11 @@ extends:
                 git clean -ffdx
                 git reset --hard HEAD
               displayName: 'Clean up working directory'
+
+            - bash: |
+                 echo 'int main() { return 42; }' > helloworld.cpp
+                 clang helloworld.cpp -o helloworld
+               displayName: Run cpp helloworld
 
             - bash: |
                 ./build.sh --ci --restore --build --pack --arch x64 --configuration $(_BuildConfig) $(_InternalBuildArgs) /p:RestoreUsingNuGetTargets=false
