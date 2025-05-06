@@ -66,6 +66,7 @@ extends:
               displayName: 'Clean up working directory'
 
             - bash: |
+                cd eng/
                 echo 'int main() { return 42; }' > helloworld.cpp
                 clang helloworld.cpp -o helloworld
               displayName: Run cpp helloworld
