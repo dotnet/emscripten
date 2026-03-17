@@ -48,7 +48,7 @@ extends:
             timeoutInMinutes: 360
             pool:
               name: $(DncEngInternalBuildPool)
-              image: 1es-ubuntu-2204
+              image: build.azurelinux.3.amd64
               os: linux
             container: mariner20
             steps:
