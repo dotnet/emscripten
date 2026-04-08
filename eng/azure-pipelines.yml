@@ -47,11 +47,12 @@ extends:
         parameters:
           enablePublishBuildArtifacts: true
           enablePublishBuildAssets: true
-          enablePublishUsingPipelines: true
+          publishingVersion: 4
           jobs:
 
           ############ LINUX BUILD ############
           - job: Build_Linux
+            enablePublishing: true
             displayName: Linux
             timeoutInMinutes: 360
             pool:
@@ -85,6 +86,7 @@ extends:
     ############ POST BUILD ARCADE LOGIC ############
     - template: /eng/common/templates-official/post-build/post-build.yml@self
       parameters:
+        publishingInfraVersion: 4
         enableSourceLinkValidation: false
         enableSigningValidation: false
         enableSymbolValidation: false
