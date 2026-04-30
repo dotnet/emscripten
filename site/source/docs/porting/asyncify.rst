@@ -1,23 +1,30 @@
 .. _asyncify section:
 
-========
-Asyncify
-========
+=================
+Asynchronous Code
+=================
 
-Asyncify lets **synchronous** C or C++ code interact with **asynchronous**
-JavaScript. This allows things like:
+Emscripten supports two ways (Asyncify and JSPI) that let **synchronous** C or
+C++ code interact with **asynchronous** JavaScript. This allows things like:
 
  * A synchronous call in C that yields to the event loop, which
    allows browser events to be handled.
  * A synchronous call in C that waits for an asynchronous operation in JS to
    complete.
 
-Asyncify automatically transforms your compiled code into a form that can be
-paused and resumed, and handles pausing and resuming for you, so that it is
-asynchronous (hence the name "Asyncify") even though you wrote it in a normal
-synchronous way.
+In general the two options are very similar, but rely on different underlying
+mechanisms to work.
 
-See the
+  * `Asyncify` - Asyncify automatically transforms your compiled code into a
+    form that can be paused and resumed, and handles pausing and resuming for
+    you, so that it is asynchronous (hence the name "Asyncify") even though you
+    wrote it in a normal synchronous way. This works in most environments, but
+    can cause the Wasm output to be much larger.
+  * `JSPI` (experimental) - Uses the VM's support for JavaScript Promise
+    Integration (JSPI) for interacting with async JavaScript. The code size will
+    remain the same, but support for this feature is still experimental.
+
+For more on Asyncify see the
 `Asyncify introduction blogpost <https://kripken.github.io/blog/wasm/2019/07/16/asyncify.html>`_
 for general background and details of how it works internally (you can also view
 `this talk about Asyncify <https://www.youtube.com/watch?v=qQOP6jqZqf8>`_).
@@ -62,11 +69,11 @@ Let's begin with the example from that blogpost:
       }
     }
 
-You can compile that with
+You can compile that using either `-sASYNCIFY` or `-sJSPI`
 
 ::
 
-    emcc -O3 example.cpp -sASYNCIFY
+    emcc -O3 example.cpp -s<ASYNCIFY or JSPI>
 
 .. note:: It's very important to optimize (``-O3`` here) when using Asyncify, as
           unoptimized builds are very large.
@@ -75,7 +82,13 @@ And you can run it with
 
 ::
 
-    nodejs a.out.js
+    node a.out.js
+
+Or with JSPI
+
+::
+
+    node --experimental-wasm-stack-switching a.out.js
 
 You should then see something like this:
 
@@ -90,7 +103,7 @@ You should then see something like this:
 
 The code is written with a straightforward loop, which does not exit while
 it is running, which normally would not allow async events to be handled by the
-browser. With Asyncify, those sleeps actually yield to the browser's main event
+browser. With Asyncify/JSPI, those sleeps actually yield to the browser's main event
 loop, and the timer can happen!
 
 Making async Web APIs behave as if they were synchronous
@@ -132,7 +145,7 @@ To run this example, first compile it with
 
 ::
 
-    emcc example.c -O3 -o a.html -sASYNCIFY
+    emcc example.c -O3 -o a.html -s<ASYNCIFY or JSPI>
 
 To run this, you must run a :ref:`local webserver <faq-local-webserver>`
 and then browse to ``http://localhost:8000/a.html``.
@@ -148,8 +161,49 @@ You will see something like this:
 That shows that the C code only continued to execute after the async JS
 completed.
 
-Ways to use async APIs in older engines
-#######################################
+.. _marking_async_functions:
+
+Marking JS library functions as async
+#####################################
+
+If you mark a JS library function as async using the ``__async`` decorator then
+the compiler will take a care of all the details of using the ``Asyncify`` API
+for you.  The function will also automatically be included in
+:ref:`ASYNCIFY_IMPORTS`.  All you need to do is write normal async JS function
+(either using the explict ``async`` JS keyword or returning a ``Promise``
+object).  For example:
+
+.. code-block:: js
+
+   addToLibrary({
+     fetch_v1__async: 'auto',
+     fetch_v1: async (url) => {
+       const response = await fetch(UTF8ToString(url);
+       const json_data = await response.json();
+       return stringToNewUTF8(json_data);
+     },
+
+     fetch_v2__async: 'auto',
+     fetch_v2: (url) => {
+       return fetch(UTF8ToString(url))
+         .then((rsp) => response.json())
+         .then((json_data) => stringToNewUTF8(json_data));
+     },
+   });
+
+This JS library file contains two JS functions (``fetch_v1`` and ``fetch_v2``)
+which do exactly the same thing, one using the JS ``async`` keyword and one
+using promise chaining.  They are both marked as ``__async: 'auto'`` which means
+they will automatically suspend Wasm executation when called and resume when the
+resulting promise resolves.
+
+You can use ``__async: 1`` if you just want to include the function in
+:ref:`ASYNCIFY_IMPORTS` or ``__async: 'auto'`` if you also want the function to
+wrapper in ``Asyncify.handleAsync``.
+
+
+Ways to use Asyncify APIs in older engines
+##########################################
 
 If your target JS engine doesn't support the modern ``async/await`` JS
 syntax, you can desugar the above implementation of ``do_fetch`` to use Promises
@@ -170,8 +224,9 @@ directly with ``EM_JS`` and ``Asyncify.handleAsync`` instead:
 
 When using this form, the compiler doesn't statically know that ``do_fetch`` is
 asynchronous anymore. Instead, you must tell the compiler that ``do_fetch()``
-can do an asynchronous operation using ``ASYNCIFY_IMPORTS``, otherwise it won't
-instrument the code to allow pausing and resuming (see more details later down):
+can do an asynchronous operation using :ref:`ASYNCIFY_IMPORTS`, otherwise it
+won't instrument the code to allow pausing and resuming (see more details later
+down):
 
 ::
 
@@ -205,10 +260,10 @@ More on ``ASYNCIFY_IMPORTS``
 
 As in the above example, you can add JS functions that do an async operation but
 look synchronous from the perspective of C. If you don't use ``EM_ASYNC_JS``,
-it's vital to add such methods to ``ASYNCIFY_IMPORTS``. That list of imports is
-the list of imports to the Wasm module that the Asyncify instrumentation must be
-aware of. Giving it that list tells it that all other JS calls will **not** do
-an async operation, which lets it not add overhead where it isn't needed.
+it's vital to add such methods to :ref:`ASYNCIFY_IMPORTS`. That list of imports
+is the list of imports to the Wasm module that the Asyncify instrumentation must
+be aware of. Giving it that list tells it that all other JS calls will **not**
+do an async operation, which lets it not add overhead where it isn't needed.
 
 .. note:: If the import is not inside ``env`` the full path must be specified, for example, ``ASYNCIFY_IMPORTS=wasi_snapshot_preview1.fd_write``
 
@@ -217,7 +272,7 @@ Asyncify with Dynamic Linking
 
 If you want to use Asyncify in dynamic libraries, those methods which are imported
 from other linked modules (and that will be on the stack in an async operation)
-should be listed in ``ASYNCIFY_IMPORTS``.
+should be listed in :ref:`ASYNCIFY_IMPORTS`.
 
 .. code-block:: cpp
 
@@ -248,8 +303,8 @@ linking manner:
     }
 
 In the main module, the compiler doesn’t statically know that ``sleep_for_seconds`` is
-asynchronous. Therefore, you must add ``sleep_for_seconds`` to the ``ASYNCIFY_IMPORTS``
-list.
+asynchronous. Therefore, you must add ``sleep_for_seconds`` to the
+:ref:`ASYNCIFY_IMPORTS` list.
 
 ::
 
@@ -267,13 +322,17 @@ and want to ``await`` a dynamically retrieved ``Promise``, you can call an
     val my_object = /* ... */;
     val result = my_object.call<val>("someAsyncMethod").await();
 
-In this case you don't need to worry about ``ASYNCIFY_IMPORTS``, since it's an
-internal implementation detail of ``val::await`` and Emscripten takes care of it
-automatically.
+In this case you don't need to worry about :ref:`ASYNCIFY_IMPORTS` or
+:ref:`JSPI_IMPORTS`, since it's an internal implementation detail of
+``val::await`` and Emscripten takes care of it automatically.
 
-Note that when Asyncify is used with Embind and the code is invoked from
-JavaScript, then it will be implicitly treated as an ``async`` function,
-returning a ``Promise`` to the return value, as demonstrated below.
+Note that when using Embind exports, Asyncify and JSPI behave differently. When
+Asyncify is used with Embind and the code is invoked from JavaScript, then the
+function will return a ``Promise`` if the export calls any suspending functions,
+otherwise the result will be returned synchronously. However, with JSPI, the
+parameter ``emscripten::async()`` must be used to mark the function as
+asynchronous and the export will always return a ``Promise`` regardless if the
+export suspended.
 
 .. code-block:: cpp
 
@@ -288,15 +347,18 @@ returning a ``Promise`` to the return value, as demonstrated below.
    }
 
    EMSCRIPTEN_BINDINGS(example) {
+     // Asyncify
      emscripten::function("delayAndReturn", &delayAndReturn);
+     // JSPI
+     emscripten::function("delayAndReturn", &delayAndReturn, emscripten::async());
    }
 
 Build with
 ::
 
-    emcc -O3 example.cpp -lembind -sASYNCIFY
+    emcc -O3 example.cpp -lembind -s<ASYNCIFY or JSPI>
 
-Then invoke from JavaScript
+Then invoke from JavaScript (using Asyncify)
 
 .. code-block:: javascript
 
@@ -316,6 +378,19 @@ if Asyncify calls are encountered (such as ``emscripten_sleep()``,
 If the code path is undetermined, the caller may either check if the returned
 value is an ``instanceof Promise`` or simply ``await`` on the returned value.
 
+When using JSPI the return values will always be a ``Promise`` as seen below
+
+.. code-block:: javascript
+
+   let syncResult = Module.delayAndReturn(false);
+   console.log(syncResult); // Promise { <pending> }
+   console.log(await syncResult); // 42
+
+   let asyncResult = Module.delayAndReturn(true);
+   console.log(asyncResult); // Promise { <pending> }
+   console.log(await asyncResult); // 42
+
+
 Usage with ``ccall``
 ####################
 
@@ -332,8 +407,25 @@ In this example, a function "func" is called which returns a Number.
       console.log("js_func: " + result);
     });
 
-Optimizing
-##########
+
+Differences Between Asyncify and JSPI
+#####################################
+
+Besides using different underlying mechanisms, Asyncify and JSPI also handle
+async imports and exports differently. Asyncify will automatically determine
+what exports will become async based on what could potentially call an
+an async import (:ref:`ASYNCIFY_IMPORTS`). However, with JSPI, the async imports
+and exports must be explicitly set using :ref:`JSPI_IMPORTS` and
+:ref:`JSPI_EXPORTS` settings.
+
+.. note:: ``<JSPI/ASYNCIFY>_IMPORTS`` and ``JSPI_EXPORTS`` aren't needed when
+          using various helpers mentioned above such as: ``EM_ASYNC_JS``,
+          Embind's Async support, ``ccall``, etc...
+
+Optimizing Asyncify
+###################
+
+.. note:: This section does not apply to JSPI.
 
 As mentioned earlier, unoptimized builds with Asyncify can be large and slow.
 Build with optimizations (say, ``-O3``) to get good results.
@@ -343,35 +435,39 @@ code to allow unwinding and rewinding. That overhead is usually not extreme,
 something like 50% or so. Asyncify achieves that by doing a whole-program
 analysis to find functions need to be instrumented and which do not -
 basically, which can call something that reaches one of
-``ASYNCIFY_IMPORTS``. That analysis avoids a lot of unnecessary overhead,
+:ref:`ASYNCIFY_IMPORTS`. That analysis avoids a lot of unnecessary overhead,
 however, it is limited by **indirect calls**, since it can't tell where
 they go - it could be anything in the function table (with the same type).
 
 If you know that indirect calls are never on the stack when unwinding, then
 you can tell Asyncify to ignore indirect calls using
-``ASYNCIFY_IGNORE_INDIRECT``.
+:ref:`ASYNCIFY_IGNORE_INDIRECT`.
 
 If you know that some indirect calls matter and others do not, then you
 can provide a manual list of functions to Asyncify:
 
-* ``ASYNCIFY_REMOVE`` is a list of functions that do not unwind the stack.
-  Asyncify will do its normal whole-program analysis, then remove these
-  functions from the list of instrumented functions.
-* ``ASYNCIFY_ADD`` is a list of functions that do unwind the stack, and
-  are added after doing the normal whole-program analysis. This is mostly useful
-  if you use ``ASYNCIFY_IGNORE_INDIRECT`` but want to also mark some additional
-  functions that need to unwind.
-* ``ASYNCIFY_ONLY`` is a list of the **only** functions that can unwind
+* :ref:`ASYNCIFY_REMOVE` is a list of functions that do not unwind the stack.
+  As Asyncify processes the call tree, functions in this list will be removed,
+  and neither they nor their callers will be instrumented (unless their callers
+  need to be instrumented for other reasons.)
+* :ref:`ASYNCIFY_ADD` is a list of functions that do unwind the stack, and will be
+  processed like the imports. This is mostly useful
+  if you use :ref:`ASYNCIFY_IGNORE_INDIRECT` but want to also mark some additional
+  functions that need to unwind. If the :ref:`ASYNCIFY_PROPAGATE_ADD` setting is
+  disabled however, then this list will only be added after the whole-program
+  analysis. If :ref:`ASYNCIFY_PROPAGATE_ADD` is disabled then you must also add
+  their callers, their callers' callers, and so on.
+* :ref:`ASYNCIFY_ONLY` is a list of the **only** functions that can unwind
   the stack. Asyncify will instrument exactly those and no others.
 
-You can enable the ``ASYNCIFY_ADVISE`` setting, which will tell the compiler to
+You can enable the :ref:`ASYNCIFY_ADVISE` setting, which will tell the compiler to
 output which functions it is currently instrumenting and why. You can then
-determine whether you should add any functions to ``ASYNCIFY_REMOVE`` or
-whether it would be safe to enable ``ASYNCIFY_IGNORE_INDIRECT``. Note that this
+determine whether you should add any functions to :ref:`ASYNCIFY_REMOVE` or
+whether it would be safe to enable :ref:`ASYNCIFY_IGNORE_INDIRECT`. Note that this
 phase of the compiler happens after many optimization phases, and several
 functions maybe be inlined already. To be safe, run it with `-O0`.
 
-For more details see ``settings.js``. Note that the manual settings
+For more details see :ref:`settings-reference`. Note that the manual settings
 mentioned here are error-prone - if you don't get things exactly right,
 your application can break. If you don't absolutely need maximal performance,
 it's usually ok to use the defaults.
@@ -379,12 +475,12 @@ it's usually ok to use the defaults.
 Potential problems
 ##################
 
-Stack overflows
-***************
+Stack overflows (Asyncify)
+**************************
 
 If you see an exception thrown from an ``asyncify_*`` API, then it may be
 a stack overflow. You can increase the stack size with the
-``ASYNCIFY_STACK_SIZE`` option.
+:ref:`ASYNCIFY_STACK_SIZE` option.
 
 Reentrancy
 **********
@@ -405,14 +501,14 @@ if a function uses a global and assumes nothing else can modify it until it
 returns, but if that function sleeps and an event causes other code to
 change that global, then bad things can happen.
 
-Starting to rewind with compiled code on the stack
-**************************************************
+Starting to rewind with compiled code on the stack (Asyncify)
+*************************************************************
 
 The examples above show `wakeUp()` being called from JS (after a callback,
 typically), and without any compiled code on the stack. If there *were* compiled
 code on the stack, then that could interfere with properly rewinding and
 resuming execution, in confusing ways, and therefore an assertion will be
-thrown in a build with ``ASSERTIONS``.
+thrown in a build with :ref:`ASSERTIONS`.
 
 (Specifically, the problem there is that while rewinding will work properly,
 if you later unwind again, that unwinding will also unwind through that extra
@@ -422,10 +518,10 @@ A simple workaround you may find useful is to do a setTimeout of 0, replacing
 ``wakeUp()`` with ``setTimeout(wakeUp, 0);``. That will run ``wakeUp`` in a
 later callback, when nothing else is on the stack.
 
-Migrating from older APIs
-#########################
+Migrating from older Asyncify APIs
+##################################
 
-If you have code uses the old Emterpreter-Async API, or the old Asyncify, then
+If you have code that uses the old Emterpreter-Async API, or the old Asyncify, then
 almost everything should just work when you replace ``-sEMTERPRETIFY`` usage
 with ``-sASYNCIFY``. In particular all the things like ``emscripten_wget``
 should just work as they did before.

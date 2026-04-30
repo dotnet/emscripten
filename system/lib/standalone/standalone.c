@@ -25,6 +25,7 @@
 
 #include "lock.h"
 #include "emscripten_internal.h"
+#include "unwind.h"
 
 /*
  * WASI support code. These are compiled with the program, and call out
@@ -34,36 +35,16 @@
 
 // libc
 
-void abort() {
-  _Exit(1);
+void _abort_js(void) {
+  __builtin_trap();
+  /* Beyond this point should be unreachable. */
+  _Exit(117);
 }
 
 _Static_assert(CLOCK_REALTIME == __WASI_CLOCKID_REALTIME, "must match");
 _Static_assert(CLOCK_MONOTONIC == __WASI_CLOCKID_MONOTONIC, "must match");
 _Static_assert(CLOCK_PROCESS_CPUTIME_ID == __WASI_CLOCKID_PROCESS_CPUTIME_ID, "must match");
 _Static_assert(CLOCK_THREAD_CPUTIME_ID == __WASI_CLOCKID_THREAD_CPUTIME_ID, "must match");
-
-#define NSEC_PER_SEC (1000 * 1000 * 1000)
-
-struct timespec __wasi_timestamp_to_timespec(__wasi_timestamp_t timestamp) {
-  return (struct timespec){.tv_sec = timestamp / NSEC_PER_SEC,
-                           .tv_nsec = timestamp % NSEC_PER_SEC};
-}
-
-int clock_getres(clockid_t clk_id, struct timespec *tp) {
-  // See https://github.com/bytecodealliance/wasmtime/issues/3714
-  if (clk_id > __WASI_CLOCKID_THREAD_CPUTIME_ID || clk_id < 0) {
-    errno = EINVAL;
-    return -1;
-  }
-  __wasi_timestamp_t res;
-  __wasi_errno_t error = __wasi_clock_res_get(clk_id, &res);
-  if (error != __WASI_ERRNO_SUCCESS) {
-    return __wasi_syscall_ret(error);
-  }
-  *tp = __wasi_timestamp_to_timespec(res);
-  return 0;
-}
 
 // mmap support is nonexistent. TODO: emulate simple mmaps using
 // stdio + malloc, which is slow but may help some things?
@@ -82,6 +63,10 @@ weak int _mmap_js(size_t length,
 
 weak int _munmap_js(
   intptr_t addr, size_t length, int prot, int flags, int fd, off_t offset) {
+  return -ENOSYS;
+}
+
+weak int _poll_js(void *fds, int nfds, int timeout, void* ctx, void* arg) {
   return -ENOSYS;
 }
 
@@ -134,12 +119,6 @@ weak int __syscall_lstat64(intptr_t path, intptr_t buf) {
   return -ENOSYS;
 }
 
-// There is no good source of entropy without an import. Make this weak so that
-// it can be replaced with a pRNG or a proper import.
-weak int getentropy(void* buffer, size_t length) {
-  abort();
-}
-
 // Emscripten additions
 
 size_t emscripten_get_heap_max() {
@@ -149,22 +128,21 @@ size_t emscripten_get_heap_max() {
   return emscripten_get_heap_size();
 }
 
-int emscripten_resize_heap(size_t size) {
-#if defined(EMSCRIPTEN_MEMORY_GROWTH) && !defined(EMSCRIPTEN_PURE_WASI)
+bool emscripten_resize_heap(size_t size) {
+#if defined(EMSCRIPTEN_MEMORY_GROWTH)
   size_t old_size = __builtin_wasm_memory_size(0) * WASM_PAGE_SIZE;
   assert(old_size < size);
   ssize_t diff = (size - old_size + WASM_PAGE_SIZE - 1) / WASM_PAGE_SIZE;
   size_t result = __builtin_wasm_memory_grow(0, diff);
-  // Its seems v8 has a bug in memory.grow that causes it to return
-  // (uint32_t)-1 even with memory64:
-  // https://bugs.chromium.org/p/v8/issues/detail?id=13948
-  if (result != (uint32_t)-1 && result != (size_t)-1) {
+  if (result != (size_t)-1) {
+#if !defined(EMSCRIPTEN_PURE_WASI)
     // Success, update JS (see https://github.com/WebAssembly/WASI/issues/82)
     emscripten_notify_memory_growth(0);
-    return 1;
+#endif
+    return true;
   }
 #endif
-  return 0;
+  return false;
 }
 
 // Call clock_gettime with a particular clock and return the result in ms.
@@ -279,7 +257,7 @@ int _wasmfs_stdin_get_char(void) {
 }
 
 // In the non-standalone build we define this helper function in JS to avoid
-// signture mismatch issues.
+// signature mismatch issues.
 // See: https://github.com/emscripten-core/posixtestsuite/issues/6
 void __call_sighandler(sighandler_t handler, int sig) {
   handler(sig);
@@ -330,8 +308,12 @@ weak char* _emscripten_sanitizer_get_option(const char* name) {
   return strdup("");
 }
 
-weak char* emscripten_get_module_name(char* buf, size_t length) {
-  return strncpy(buf, "<unknown>", length);
+weak void _emscripten_get_progname(char* buf, int length) {
+  strncpy(buf, "<unknown>", length);
 }
 
 weak void _emscripten_runtime_keepalive_clear() {}
+
+void __throw_exception_with_stack_trace(_Unwind_Exception* exception_object) {
+  _Unwind_RaiseException(exception_object);
+}

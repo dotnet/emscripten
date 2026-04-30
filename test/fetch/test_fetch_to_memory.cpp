@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <math.h>
 #include <assert.h>
+#include <stdlib.h>
 #include <emscripten/fetch.h>
 
 int result = 1;
@@ -15,8 +16,7 @@ int result = 1;
 // then testing an XHR of a missing file.
 // #define FILE_DOES_NOT_EXIST
 
-int main()
-{
+int main() {
   emscripten_fetch_attr_t attr;
   emscripten_fetch_attr_init(&attr);
   strcpy(attr.requestMethod, "GET");

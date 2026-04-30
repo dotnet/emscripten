@@ -38,9 +38,8 @@ using IntWrapperIntermediate = int;
 // Specify custom (un)marshalling for all types satisfying IsIntWrapper.
 namespace emscripten {
 namespace internal {
-// remove_cv/remove_reference are required for TypeID, but not BindingType, see https://github.com/emscripten-core/emscripten/issues/7292
 template<typename T>
-struct TypeID<T, typename std::enable_if<IsIntWrapper<typename std::remove_cv<typename std::remove_reference<T>::type>::type>::value, void>::type> {
+struct TypeID<T, typename std::enable_if<IsIntWrapper<T>::value, void>::type> {
   static constexpr TYPEID get() {
     return TypeID<IntWrapperIntermediate>::get();
   }
@@ -50,8 +49,8 @@ template<typename T>
 struct BindingType<T, typename std::enable_if<IsIntWrapper<T>::value, void>::type> {
   typedef typename BindingType<IntWrapperIntermediate>::WireType WireType;
 
-  constexpr static WireType toWireType(const T& v) {
-    return BindingType<IntWrapperIntermediate>::toWireType(v.get());
+  constexpr static WireType toWireType(const T& v, rvp::default_tag) {
+    return BindingType<IntWrapperIntermediate>::toWireType(v.get(), rvp::default_tag{});
   }
   constexpr static T fromWireType(WireType v) {
     return T::create(BindingType<IntWrapperIntermediate>::fromWireType(v));

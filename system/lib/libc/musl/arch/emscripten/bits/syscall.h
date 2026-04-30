@@ -5,16 +5,13 @@
 #define SYS_sync		 __syscall_sync
 #define SYS_rmdir		 __syscall_rmdir
 #define SYS_dup		 __syscall_dup
-#define SYS_pipe		 __syscall_pipe
 #define SYS_acct		 __syscall_acct
 #define SYS_ioctl		 __syscall_ioctl
 #define SYS_setpgid		 __syscall_setpgid
 #define SYS_umask		 __syscall_umask
 #define SYS_getppid		 __syscall_getppid
 #define SYS_setsid		 __syscall_setsid
-#define SYS_setrlimit		 __syscall_setrlimit
 #define SYS_getrusage		 __syscall_getrusage
-#define SYS_symlink		 __syscall_symlink
 #define SYS_munmap		 __syscall_munmap
 #define SYS_fchmod		 __syscall_fchmod
 #define SYS_getpriority	 __syscall_getpriority
@@ -25,7 +22,6 @@
 #define SYS_mprotect		__syscall_mprotect
 #define SYS_getpgid		__syscall_getpgid
 #define SYS_fchdir		__syscall_fchdir
-#define SYS__newselect		__syscall__newselect
 #define SYS_msync		__syscall_msync
 #define SYS_getsid		__syscall_getsid
 #define SYS_fdatasync		__syscall_fdatasync
@@ -36,7 +32,6 @@
 #define SYS_mremap		__syscall_mremap
 #define SYS_poll		__syscall_poll
 #define SYS_getcwd		__syscall_getcwd
-#define SYS_ugetrlimit		__syscall_ugetrlimit
 #define SYS_mmap2		__syscall_mmap2
 #define SYS_truncate64		__syscall_truncate64
 #define SYS_ftruncate64	__syscall_ftruncate64
@@ -68,9 +63,8 @@
 #define SYS_linkat		__syscall_linkat
 #define SYS_symlinkat		__syscall_symlinkat
 #define SYS_readlinkat		__syscall_readlinkat
-#define SYS_fchmodat		__syscall_fchmodat
+#define SYS_fchmodat2		__syscall_fchmodat2
 #define SYS_faccessat		__syscall_faccessat
-#define SYS_pselect6		__syscall_pselect6
 #define SYS_utimensat		__syscall_utimensat
 #define SYS_fallocate		__syscall_fallocate
 #define SYS_dup3		__syscall_dup3

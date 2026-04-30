@@ -22,13 +22,31 @@ class Test {
 
   int getY() const { return y; }
 
+  std::string string_property;
+
   static int static_function(int x) { return 1; }
 
   static int static_property;
+  static std::string static_string_property;
 
 private:
   int x;
   int y;
+};
+
+class Foo {
+ public:
+  void process(const Test& input) {}
+};
+
+class IterableClass {
+ public:
+  IterableClass() : data{1, 2, 3} {}
+  unsigned int count() const { return 3; }
+  int at(unsigned int index) const { return data[index]; }
+
+ private:
+  int data[3];
 };
 
 Test class_returning_fn() { return Test(); }
@@ -37,25 +55,40 @@ std::unique_ptr<Test> class_unique_ptr_returning_fn() {
   return std::make_unique<Test>();
 }
 
-class Foo {
- public:
-  void process(const Test& input) {}
-};
-
-enum Bar { kValueOne, kValueTwo, kValueThree };
-
+enum FirstEnum { kValueOne, kValueTwo, kValueThree };
+enum SecondEnum { kValueA, kValueB, kValueC };
+enum ThirdEnum { kValueAlpha, kValueBeta, kValueGamma };
 enum EmptyEnum {};
 
-Bar enum_returning_fn() { return kValueOne; }
+FirstEnum enum_returning_fn() { return kValueOne; }
+SecondEnum num_enum_returning_fn() { return kValueA; }
+ThirdEnum str_enum_returning_fn() { return kValueAlpha; }
 
 struct ValArr {
   int x, y, z;
 };
 
+EMSCRIPTEN_DECLARE_VAL_TYPE(CallbackType);
+
 struct ValObj {
-  Foo foo;
-  Bar bar;
+  FirstEnum firstEnum;
+  SecondEnum secondEnum;
+  ThirdEnum thirdEnum;
+  std::string string;
+  CallbackType callback;
+  std::optional<int> optionalInt;
+  ValObj() : callback(val::undefined()) {}
 };
+
+EMSCRIPTEN_DECLARE_VAL_TYPE(AliasedVal);
+
+
+ValObj getValObj() {
+  ValObj o;
+  return o;
+}
+
+void setValObj(ValObj v) {}
 
 class ClassWithConstructor {
  public:
@@ -81,11 +114,16 @@ int smart_ptr_function(std::shared_ptr<ClassWithSmartPtrConstructor>) {
   return 0;
 }
 
-EMSCRIPTEN_DECLARE_VAL_TYPE(CallbackType);
+struct Obj {};
+Obj* get_pointer(Obj* ptr) { return ptr; }
+Obj* get_nonnull_pointer() { return new Obj(); }
 
 int function_with_callback_param(CallbackType ct) {
   ct(val("hello"));
   return 0;
+}
+
+void function_consuming_aliased_val(AliasedVal) {
 }
 
 int global_fn(int, int) { return 0; }
@@ -98,7 +136,15 @@ std::wstring wstring_test(std::wstring arg) {
   return L"hi";
 }
 
+std::optional<std::string> optional_string_test(std::string arg) {
+  return "hi";
+}
+
 std::optional<int> optional_test(std::optional<Foo> arg) {
+  return {};
+}
+
+std::optional<int> optional_and_nonoptional_test(std::optional<Foo> arg1, int arg2) {
   return {};
 }
 
@@ -114,6 +160,18 @@ class DerivedClass : public BaseClass {
   int fn2(int x) { return 2; }
 };
 
+struct Interface {
+  virtual void invoke(const std::string& str) = 0;
+  virtual ~Interface() {}
+};
+
+struct InterfaceWrapper : public wrapper<Interface> {
+  EMSCRIPTEN_WRAPPER(InterfaceWrapper);
+  void invoke(const std::string& str) {
+      return call<void>("invoke", str);
+  }
+};
+
 EMSCRIPTEN_BINDINGS(Test) {
   class_<Test>("Test")
       .function("functionOne", &Test::function_one)
@@ -126,44 +184,71 @@ EMSCRIPTEN_BINDINGS(Test) {
       .function("constFn", &Test::const_fn)
       .property("x", &Test::getX, &Test::setX)
       .property("y", &Test::getY)
+      .property("stringProperty", &Test::string_property)
       .class_function("staticFunction", &Test::static_function)
       .class_function("staticFunctionWithParam(x)", &Test::static_function)
       .class_property("staticProperty", &Test::static_property)
+      .class_property("staticStringProperty", &Test::static_string_property)
 	;
 
   function("class_returning_fn", &class_returning_fn);
   function("class_unique_ptr_returning_fn",
                    &class_unique_ptr_returning_fn);
+  class_<Obj>("Obj");
+  function("getPointer", &get_pointer, allow_raw_pointers());
+  function("getNonnullPointer", &get_nonnull_pointer, allow_raw_pointers(), nonnull<ret_val>());
 
   constant("an_int", 5);
   constant("a_bool", false);
-  constant("an_enum", Bar::kValueOne);
+  constant("an_enum", FirstEnum::kValueOne);
   constant("a_class_instance", Test());
 
-  enum_<Bar>("Bar")
-      .value("valueOne", Bar::kValueOne)
-      .value("valueTwo", Bar::kValueTwo)
-      .value("valueThree", Bar::kValueThree);
+  enum_<FirstEnum>("FirstEnum", enum_value_type::object)
+      .value("kValueOne", FirstEnum::kValueOne)
+      .value("kValueTwo", FirstEnum::kValueTwo)
+      .value("kValueThree", FirstEnum::kValueThree);
+  enum_<SecondEnum>("SecondEnum", enum_value_type::number)
+      .value("kValueA", SecondEnum::kValueA)
+      .value("kValueB", SecondEnum::kValueB)
+      .value("kValueC", SecondEnum::kValueC);
+  enum_<ThirdEnum>("ThirdEnum", enum_value_type::string)
+      .value("kValueAlpha", ThirdEnum::kValueAlpha)
+      .value("kValueBeta", ThirdEnum::kValueBeta)
+      .value("kValueGamma", ThirdEnum::kValueGamma);
   enum_<EmptyEnum>("EmptyEnum");
 
   function("enum_returning_fn", &enum_returning_fn);
+  function("num_enum_returning_fn", &num_enum_returning_fn);
+  function("str_enum_returning_fn", &str_enum_returning_fn);
 
   value_array<ValArr>("ValArr")
       .element(&ValArr::x)
       .element(&ValArr::y)
       .element(&ValArr::z);
 
-  value_array<std::array<Bar, 4>>("ValArrIx")
+  value_array<std::array<FirstEnum, 4>>("ValArrIx")
     .element(emscripten::index<0>())
     .element(emscripten::index<1>())
     .element(emscripten::index<2>())
     .element(emscripten::index<3>());
 
   value_object<ValObj>("ValObj")
-      .field("foo", &ValObj::foo)
-      .field("bar", &ValObj::bar);
+      .field("string", &ValObj::string)
+      .field("firstEnum", &ValObj::firstEnum)
+      .field("secondEnum", &ValObj::secondEnum)
+      .field("thirdEnum", &ValObj::thirdEnum)
+      .field("optionalInt", &ValObj::optionalInt)
+      .field("callback", &ValObj::callback);
+  function("getValObj", &getValObj);
+  function("setValObj", &setValObj);
 
   register_vector<int>("IntVec");
+
+  class_<IterableClass>("IterableClass")
+      .constructor<>()
+      .function("count", &IterableClass::count)
+      .function("at", &IterableClass::at)
+      .iterable<int>("count", "at");
 
   register_map<int, int>("MapIntInt");
 
@@ -172,11 +257,14 @@ EMSCRIPTEN_BINDINGS(Test) {
   function("global_fn", &global_fn);
 
   register_optional<int>();
+  register_optional<std::string>();
   register_optional<Foo>();
   function("optional_test", &optional_test);
+  function("optional_and_nonoptional_test", &optional_and_nonoptional_test);
 
   function("string_test", &string_test);
   function("wstring_test", &wstring_test);
+  function("optional_string_test", &optional_string_test);
 
   class_<ClassWithConstructor>("ClassWithConstructor")
       .constructor<int, const ValArr&>()
@@ -199,15 +287,25 @@ EMSCRIPTEN_BINDINGS(Test) {
   function("function_with_callback_param",
            &function_with_callback_param);
 
+  function("function_consuming_aliased_val",
+           &function_consuming_aliased_val);
+
   register_type<CallbackType>("(message: string) => void");
+  register_type<AliasedVal>("AliasedVal", "number");
 
   class_<BaseClass>("BaseClass").function("fn", &BaseClass::fn);
 
   class_<DerivedClass, base<BaseClass>>("DerivedClass")
       .function("fn2", &DerivedClass::fn2);
+
+  class_<Interface>("Interface")
+    .function("invoke", &Interface::invoke, pure_virtual())
+    .allow_subclass<InterfaceWrapper>("InterfaceWrapper")
+    ;
 }
 
 int Test::static_property = 42;
+std::string Test::static_string_property = "";
 
 int main() {
   // Main should not be run during TypeScript generation, but should run when

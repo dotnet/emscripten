@@ -3,10 +3,6 @@
 // University of Illinois/NCSA Open Source License.  Both these licenses can be
 // found in the LICENSE file.
 
-// This file defines the JS file backend and JS file of the new file system.
-// Current Status: Work in Progress.
-// See https://github.com/emscripten-core/emscripten/issues/15041.
-
 #pragma once
 
 #include "backend.h"
@@ -44,7 +40,7 @@
 // For a simple example, see js_file_backend.cpp and library_wasmfs_js_file.js
 //
 
-// Index type that is used on the JS side to refer to backands and file
+// Index type that is used on the JS side to refer to backends and file
 // handles.  Currently these are both passed as raw pointers rather than
 // integer handles which is why we use uintptr_t here.
 // TODO: Use a narrower type here and avoid passing raw pointers.
@@ -65,6 +61,7 @@ int _wasmfs_jsimpl_read(js_index_t backend,
                         size_t length,
                         off_t offset);
 int _wasmfs_jsimpl_get_size(js_index_t backend, js_index_t index);
+int _wasmfs_jsimpl_set_size(js_index_t backend, js_index_t index, off_t size);
 }
 
 namespace wasmfs {
@@ -101,7 +98,7 @@ class JSImplFile : public DataFile {
   }
 
   int setSize(off_t size) override {
-    WASMFS_UNREACHABLE("TODO: JSImpl setSize");
+    return _wasmfs_jsimpl_set_size(getBackendIndex(), getFileIndex(), size);
   }
 
 public:

@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
 
-"""Find entries in struct_info.json that are not needd by
+"""Find entries in struct_info.json that are not needed by
 any JS library code and can be removed."""
 
 import json
 import os
-import sys
 import subprocess
+import sys
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
 root_dir = os.path.dirname(os.path.dirname(script_dir))
 
-sys.path.append(root_dir)
+sys.path.insert(0, root_dir)
 
 from tools import utils
 
@@ -19,7 +19,7 @@ from tools import utils
 def check_structs(info):
   for struct, values in info['structs'].items():
     key = 'C_STRUCTS\\.' + struct + '\\.'
-    # grep --quiet ruturns 0 when there is a match
+    # grep --quiet returns 0 when there is a match
     if subprocess.run(['git', 'grep', '--quiet', key], check=False).returncode != 0:
       print(key)
     else:
@@ -32,15 +32,18 @@ def check_structs(info):
 
 
 def check_defines(info):
-  for define in info['defines'].keys():
-    key = r'cDefs\.' + define + r'\>'
-    # grep --quiet ruturns 0 when there is a match
+  for define in info['defines']:
+    if ':' in define:
+      key = fr"cDefs\['{define}'\]"
+    else:
+      key = fr'cDefs\.{define}\>'
+    # grep --quiet returns 0 when there is a match
     if subprocess.run(['git', 'grep', '--quiet', key], check=False).returncode != 0:
       print(define)
 
 
 def main():
-  json_file = utils.path_from_root('src/generated_struct_info32.json')
+  json_file = utils.path_from_root('src/struct_info_generated.json')
   info = json.loads(utils.read_file(json_file))
   check_structs(info)
   check_defines(info)

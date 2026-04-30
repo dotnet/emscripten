@@ -14,6 +14,7 @@
 #include <string.h>
 #include <threads.h>
 #include <unistd.h>
+
 #include <emscripten/heap.h>
 #include <emscripten/threading.h>
 
@@ -62,14 +63,6 @@ static void init_file_lock(FILE *f) {
   if (f && f->lock<0) f->lock = 0;
 }
 
-static pid_t next_tid = 0;
-
-// In case the stub syscall is not linked it
-static int dummy_getpid(void) {
-  return 42;
-}
-weak_alias(dummy_getpid, __syscall_getpid);
-
 static int tl_lock_count;
 static int tl_lock_waiters;
 
@@ -115,16 +108,10 @@ int __pthread_create(pthread_t* restrict res,
                      void* (*entry)(void*),
                      void* restrict arg) {
   // Note on LSAN: lsan intercepts/wraps calls to pthread_create so any
-  // allocation we we do here should be considered leaks.
+  // allocation we do here should be considered leaks.
   // See: lsan_interceptors.cpp.
   if (!res) {
     return EINVAL;
-  }
-
-  // Create threads with monotonically increasing TID starting with the main
-  // thread which has TID == PID.
-  if (!next_tid) {
-    next_tid = getpid() + 1;
   }
 
   if (!libc.threaded) {
@@ -177,12 +164,11 @@ int __pthread_create(pthread_t* restrict res,
   // The pthread struct has a field that points to itself - this is used as a
   // magic ID to detect whether the pthread_t structure is 'alive'.
   new->self = new;
-  new->tid = next_tid++;
+  new->tid = _emscripten_get_next_tid();
 
   // pthread struct robust_list head should point to itself.
   new->robust_list.head = &new->robust_list.head;
 
-  new->locale = &libc.global_locale;
   if (attr._a_detach) {
     new->detach_state = DT_DETACHED;
   } else {
@@ -248,8 +234,18 @@ int __pthread_create(pthread_t* restrict res,
   // want libc.need_locks to be set from the moment it starts.
   if (!libc.threads_minus_1++) libc.need_locks = 1;
 
+  // Assign the pthread_t object over immediately, so that by the time pthread_create_js()
+  // is dispatched to a pthread and the pthread main runs, the value will be visible to
+  // the thread to examine.
+  // Use __atomic_store_n() instead of a_store() to avoid splicing the pointer.
+  __atomic_store_n(res, new, __ATOMIC_SEQ_CST);
+
   int rtn = __pthread_create_js(new, &attr, entry, arg);
   if (rtn != 0) {
+    // Reset the pthread_t return value to zero (we assigned to it above,
+    // so by clearing it here we won't litter bits to caller)
+    __atomic_store_n(res, 0, __ATOMIC_SEQ_CST);
+
     if (!--libc.threads_minus_1) libc.need_locks = 0;
 
     // undo previous addition to the thread list
@@ -269,12 +265,11 @@ int __pthread_create(pthread_t* restrict res,
       self->prev,
       new);
 
-  *res = new;
   return 0;
 }
 
 /*
- * Called from JS main thread to free data accociated a thread
+ * Called from JS main thread to free data associated with a thread
  * that is no longer running.
  */
 void _emscripten_thread_free_data(pthread_t t) {
@@ -286,7 +281,7 @@ void _emscripten_thread_free_data(pthread_t t) {
   }
 #endif
 
-  // Free all the enture thread block (called map_base because
+  // Free all the entire thread block (called map_base because
   // musl normally allocates this using mmap).  This region
   // includes the pthread structure itself.
   unsigned char* block = t->map_base;
@@ -301,7 +296,7 @@ void _emscripten_thread_exit(void* result) {
   assert(self);
 
   self->canceldisable = PTHREAD_CANCEL_DISABLE;
-  self->cancelasync = PTHREAD_CANCEL_DEFERRED;
+  self->cancelasync = 0;
   self->result = result;
 
   _emscripten_thread_mailbox_shutdown(self);
@@ -312,9 +307,28 @@ void _emscripten_thread_exit(void* result) {
   // Call into the musl function that runs destructors of all thread-specific data.
   __pthread_tsd_run_dtors();
 
-  if (!--libc.threads_minus_1) libc.need_locks = 0;
-
   __tl_lock();
+
+  /* Process robust list in userspace to handle non-pshared mutexes
+   * and the detached thread case where the robust list head will
+   * be invalid when the kernel would process it. */
+  __vm_lock();
+  volatile void *volatile *rp;
+  while ((rp=self->robust_list.head) && rp != &self->robust_list.head) {
+    pthread_mutex_t *m = (void *)((char *)rp
+      - offsetof(pthread_mutex_t, _m_next));
+    int waiters = m->_m_waiters;
+    int priv = (m->_m_type & 128) ^ 128;
+    self->robust_list.pending = rp;
+    self->robust_list.head = *rp;
+    int cont = a_swap(&m->_m_lock, 0x40000000);
+    self->robust_list.pending = 0;
+    if (cont < 0 || waiters)
+      __wake(&m->_m_lock, 1, priv);
+  }
+  __vm_unlock();
+
+  if (!--libc.threads_minus_1) libc.need_locks = 0;
 
   self->next->prev = self->prev;
   self->prev->next = self->next;
@@ -335,7 +349,7 @@ void _emscripten_thread_exit(void* result) {
   int state = a_cas(&self->detach_state, DT_JOINABLE, DT_EXITING);
 
   if (state == DT_DETACHED) {
-    __emscripten_thread_cleanup(self);
+    _emscripten_thread_cleanup(self);
   } else {
     // Mark the thread as no longer running, so it can be joined.
     // Once we publish this, any threads that are waiting to join with us can

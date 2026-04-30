@@ -5,8 +5,8 @@
 
 import re
 
+from . import shared, utils
 from .settings import settings
-from . import utils, shared
 
 emscripten_license = '''\
 /**
@@ -45,12 +45,12 @@ def add_files_pre_js(pre_js_list, files_pre_js):
   utils.write_file(pre, '''
     // All the pre-js content up to here must remain later on, we need to run
     // it.
-    if (Module['ENVIRONMENT_IS_PTHREAD'] || Module['$ww']) Module['preRun'] = [];
+    if ((typeof ENVIRONMENT_IS_WASM_WORKER != 'undefined' && ENVIRONMENT_IS_WASM_WORKER) || (typeof ENVIRONMENT_IS_PTHREAD != 'undefined' && ENVIRONMENT_IS_PTHREAD) || (typeof ENVIRONMENT_IS_AUDIO_WORKLET != 'undefined' && ENVIRONMENT_IS_AUDIO_WORKLET)) Module['preRun'] = [];
     var necessaryPreJSTasks = Module['preRun'].slice();
   ''')
   utils.write_file(post, '''
     if (!Module['preRun']) throw 'Module.preRun should exist because file support used it; did a pre-js delete it?';
-    necessaryPreJSTasks.forEach(function(task) {
+    necessaryPreJSTasks.forEach((task) => {
       if (Module['preRun'].indexOf(task) < 0) throw 'All preRun tasks that exist before user pre-js code should remain after; did you replace Module or modify Module.preRun?';
     });
   ''')
@@ -108,18 +108,19 @@ def isidentifier(name):
 
 
 def make_dynCall(sig, args):
-  # wasm2c and asyncify are not yet compatible with direct wasm table calls
   if settings.MEMORY64:
     args = list(args)
     args[0] = f'Number({args[0]})'
+  # wasm2c and asyncify are not yet compatible with direct wasm table calls so use
+  # the legacy DYNCALLS mechanism.
   if settings.DYNCALLS or not is_legal_sig(sig):
     args = ','.join(args)
-    if not settings.MAIN_MODULE and not settings.SIDE_MODULE:
-      # Optimize dynCall accesses in the case when not building with dynamic
-      # linking enabled.
-      return 'dynCall_%s(%s)' % (sig, args)
-    else:
-      return 'Module["dynCall_%s"](%s)' % (sig, args)
+    if settings.MAIN_MODULE or settings.SIDE_MODULE:
+      # In dynamic linking mode not all of the dynCall_xxx function are defined
+      # in the main module so might not be available as global symbols.
+      # See `registerDynCallSymbols` in `libdylink.js`.
+      return "dynCalls['%s'](%s)" % (sig, args)
+    return 'dynCall_%s(%s)' % (sig, args)
   else:
     call_args = ",".join(args[1:])
     return f'getWasmTableEntry({args[0]})({call_args})'
@@ -135,15 +136,7 @@ def make_invoke(sig):
   exceptional_ret = '\n    return 0n;' if legal_sig[0] == 'j' else ''
   body = '%s%s;' % (ret, make_dynCall(sig, args))
   # Create a try-catch guard that rethrows the Emscripten EH exception.
-  if settings.EXCEPTION_STACK_TRACES:
-    # Exceptions thrown from C++ and longjmps will be an instance of
-    # EmscriptenEH.
-    maybe_rethrow = 'if (!(e instanceof EmscriptenEH)) throw e;'
-  else:
-    # Exceptions thrown from C++ will be a pointer (number) and longjmp will
-    # throw the number Infinity. Use the compact and fast "e !== e+0" test to
-    # check if e was not a Number.
-    maybe_rethrow = 'if (e !== e+0) throw e;'
+  maybe_rethrow = 'if (!(e instanceof EmscriptenEH)) throw e;'
 
   ret = '''\
 function invoke_%s(%s) {
@@ -183,7 +176,7 @@ def make_wasm64_wrapper(sig):
   # are certain places we need to avoid strict mode still.
   # e.g. emscripten_get_callstack (getCallstack) which uses the `arguments`
   # global.
-  return f'  var makeWrapper_{sig} = (f) => function ({args_in}) {{ return {result} }};\n'
+  return f'  var makeWrapper_{sig} = (f) => ({args_in}) => {result};\n'
 
 
 def make_unsign_pointer_wrapper(sig):
