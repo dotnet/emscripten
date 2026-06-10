@@ -1,4 +1,9 @@
 <Project Sdk="Microsoft.Build.Traversal">
+
+  <Target Name="CreateEntryPoints" BeforeTargets="LayoutEmscripten">
+    <Exec Command="$(ProjectDir)/tools/maint/create_entry_points.py --all" />
+  </Target>
+
   <Target Name="LayoutEmscripten" BeforeTargets="Build">
     <ItemGroup>
       <EmscriptenFiles Include="$(ProjectDir)**" />
