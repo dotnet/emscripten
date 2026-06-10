@@ -1,3 +1,0 @@
-in main
-foo called: 42 43 'a string'
-dynCall => a string

@@ -1,3 +1,0 @@
-INVOKE_RUN: 1
-CLOSURE_WARNINGS: quiet
-EMBIND: invalid compiler setting: EMBIND
