@@ -82,7 +82,7 @@ def get(ports, settings, shared):
   ports.fetch_project('harfbuzz', f'https://github.com/harfbuzz/harfbuzz/releases/download/{VERSION}/harfbuzz-{VERSION}.tar.xz', sha512hash=HASH)
 
   def create(final):
-    source_path = os.path.join(ports.get_dir(), 'harfbuzz', 'harfbuzz-' + VERSION)
+    source_path = ports.get_dir('harfbuzz', 'harfbuzz-' + VERSION)
     freetype_include = ports.get_include_dir('freetype2')
     ports.install_headers(os.path.join(source_path, 'src'), target='harfbuzz')
 
@@ -111,11 +111,12 @@ def get(ports, settings, shared):
     -fno-exceptions
     -O3
     -DNDEBUG
+    -Wno-nontrivial-memaccess
     '''.split()
 
     cflags += ['-I' + freetype_include, '-I' + os.path.join(freetype_include, 'config')]
 
-    if settings.RELOCATABLE:
+    if settings.MAIN_MODULE:
       cflags.append('-fPIC')
 
     if settings.PTHREADS:
@@ -134,6 +135,7 @@ def get(ports, settings, shared):
     cflags.append('-DHB_NO_PRAGMA_GCC_DIAGNOSTIC_ERROR')
     cflags.append('-DHB_NO_PRAGMA_GCC_DIAGNOSTIC_WARNING')
 
+    ports.make_pkg_config('harfbuzz', VERSION, '-sUSE_HARFBUZZ')
     ports.build_port(os.path.join(source_path, 'src'), final, 'harfbuzz', flags=cflags, srcs=srcs)
 
   return [shared.cache.get_lib(get_lib_name(settings), create, what='port')]

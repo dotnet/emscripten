@@ -12,61 +12,49 @@
 //                   file with modified settings and supply the filename here.
 //    input file     This is the file that will be processed by the preprocessor
 
-'use strict';
+import assert from 'node:assert';
+import {parseArgs} from 'node:util';
 
-import * as fs from 'fs';
-import * as path from 'path';
-import * as vm from 'vm';
-import assert from 'assert';
-import * as url from 'url';
+import {readFile, loadDefaultSettings, applySettings} from '../src/utility.mjs';
 
-const args = process.argv.slice(2);
-const debug = false;
-
-// Anything needed by the script that we load below must be added to the
-// global object.  These, for example, are all needed by parseTools.js.
-global.vm = vm;
-global.assert = assert;
-global.print = (x) => {
-  process.stdout.write(x + '\n');
+const options = {
+  'expand-macros': {type: 'boolean'},
+  help: {type: 'boolean', short: 'h'},
 };
-global.printErr = (x) => {
-  process.stderr.write(x + '\n');
-};
+const {values, positionals} = parseArgs({options, allowPositionals: true});
 
-function find(filename) {
-  const dirname = url.fileURLToPath(new URL('.', import.meta.url));
-  const prefixes = [process.cwd(), path.join(dirname, '..', 'src')];
-  for (let i = 0; i < prefixes.length; ++i) {
-    const combined = path.join(prefixes[i], filename);
-    if (fs.existsSync(combined)) {
-      return combined;
-    }
-  }
-  return filename;
+if (values.help) {
+  console.log(`\
+Run JS preprocessor / macro processor on an input file
+
+Usage: preprocessor.mjs <settings.json> <input-file> [--expand-macros]`);
+  process.exit(0);
 }
 
-global.read = (filename) => {
-  const absolute = find(filename);
-  return fs.readFileSync(absolute).toString();
-};
+loadDefaultSettings();
 
-global.load = (f) => {
-  vm.runInThisContext(read(f), {filename: find(f)});
-};
+assert(positionals.length == 2, 'Script requires 2 arguments');
 
-assert(args.length >= 2);
-const settingsFile = args[0];
-const inputFile = args[1];
-const expandMacros = args.includes('--expandMacros');
+// Load settings from JSON passed on the command line
+let settingsFile = positionals[0];
+assert(settingsFile, 'settings file not specified');
+if (settingsFile == '-') {
+  // Read settings json from stdin (FD 0)
+  settingsFile = 0;
+}
+const userSettings = JSON.parse(readFile(settingsFile));
+applySettings(userSettings);
 
-load(settingsFile);
-load('utility.js');
-load('modules.js');
-load('parseTools.js');
+const inputFile = positionals[1];
 
-let output = preprocess(inputFile);
-if (expandMacros) {
-  output = processMacros(output, inputFile);
+// We can't use static import statements here because several of these
+// file depend on having the settings defined in the global scope (which
+// we do dynamically above.
+const parseTools = await import('../src/parseTools.mjs');
+await import('../src/modules.mjs');
+
+let output = parseTools.preprocess(inputFile);
+if (values['expand-macros']) {
+  output = parseTools.processMacros(output, inputFile);
 }
 process.stdout.write(output);

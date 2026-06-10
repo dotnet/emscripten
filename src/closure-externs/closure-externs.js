@@ -14,15 +14,10 @@
 // Special placeholder for `import.meta` and `await import`.
 var EMSCRIPTEN$IMPORT$META;
 var EMSCRIPTEN$AWAIT$IMPORT;
+var EMSCRIPTEN$AWAIT;
 
 // Don't minify createRequire
 var createRequire;
-
-// Don't minify startWorker which we use to start workers once the runtime is ready.
-/**
- * @param {Object} Module
- */
-var startWorker = function(Module) {};
 
 // Closure externs used by library_sockfs.js
 
@@ -69,6 +64,11 @@ var Atomics = {};
 Atomics.compareExchange = function() {};
 Atomics.exchange = function() {};
 Atomics.wait = function() {};
+/**
+ * @param {number=} maxWaitMilliseconds
+ * @suppress {duplicate, checkTypes}
+ */
+Atomics.waitAsync = function(i32a, index, value, maxWaitMilliseconds) {};
 Atomics.notify = function() {};
 Atomics.load = function() {};
 Atomics.store = function() {};
@@ -109,9 +109,23 @@ WebAssembly.Instance.prototype.exports;
  */
 WebAssembly.Memory.prototype.buffer;
 /**
+ * @returns {ArrayBuffer}
+ */
+WebAssembly.Memory.prototype.toResizableBuffer = function() {};
+/**
  * @type {number}
  */
 WebAssembly.Table.prototype.length;
+/**
+ * @param {!Function} func
+ * @returns {Function}
+ */
+WebAssembly.promising = function(func) {};
+/**
+ * @constructor
+ * @param {!Function} func
+ */
+WebAssembly.Suspending = function(func) {};
 
 /**
  * @record
@@ -125,26 +139,13 @@ FunctionType.prototype.parameters;
  * @type {Array<string>}
  */
 FunctionType.prototype.results;
-/**
- * @record
- */
- function FunctionUsage() {}
- /**
-  * @type {string|undefined}
-  */
-FunctionUsage.prototype.promising;
- /**
-  * @type {string|undefined}
-  */
-FunctionUsage.prototype.suspending;
 
 /**
  * @constructor
  * @param {!FunctionType} type
  * @param {!Function} func
- * @param {FunctionUsage=} usage
  */
-WebAssembly.Function = function(type, func, usage) {};
+WebAssembly.Function = function(type, func) {};
 /**
  * @param {Function} func
  * @return {FunctionType}
@@ -196,14 +197,6 @@ var removeEventListener = function (type, listener) {};
  */
 var close;
 
-// Due to the way MODULARIZE works, Closure is run on generated code that does not define _scriptDir,
-// but only after MODULARIZE has finished, _scriptDir is injected to the generated code.
-// Therefore it cannot be minified.
-/**
- * @suppress {duplicate, undefinedVars}
- */
-var _scriptDir;
-
 // Closure run on asm.js uses a hack to execute only on shell code, declare externs needed for it.
 /**
  * @suppress {undefinedVars}
@@ -230,24 +223,28 @@ var event;
 var devicePixelRatio;
 
 /*
- * AudioWorkletGlobalScope globals
- */
-var registerProcessor = function(name, obj) {};
-var currentFrame;
-var currentTime;
-var sampleRate;
-
-/*
  * Avoid closure minifying anything to "id". See #13965
  */
 var id;
 
+/**
+ * Used in MODULARIZE mode as the name of the incoming module argument.
+ * This is generated outside of the code we pass to closure so from closure's
+ * POV this is "extern".
+ */
 var moduleArg;
+
+/**
+ * Used in MODULARIZE mode.
+ * We need to access this after the code we pass to closure so from closure's
+ * POV this is "extern".
+ */
+var moduleRtn;
 
 /**
  * This was removed from upstream closure compiler in
  * https://github.com/google/closure-compiler/commit/f83322c1b.
- * Perhaps we should remove it do?
+ * Perhaps we should remove it too?
  *
  * @param {MediaStreamConstraints} constraints A MediaStreamConstraints object.
  * @param {function(!MediaStream)} successCallback
@@ -260,3 +257,14 @@ var moduleArg;
  */
 Navigator.prototype.webkitGetUserMedia = function(
     constraints, successCallback, errorCallback) {};
+
+/**
+ * A symbol from the explicit resource management proposal that isn't yet part of Closure.
+ * @type {symbol}
+ */
+Symbol.dispose;
+
+// Common between node-externs and v8-externs
+var os = {};
+
+AudioWorkletProcessor.parameterDescriptors;
