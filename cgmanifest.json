@@ -1,0 +1,16 @@
+{
+    "$schema": "https://json.schemastore.org/component-detection-manifest.json",
+    "version": 1,
+    "registrations": [
+        {
+            "component": {
+                "type": "git",
+                "git": {
+                    "repositoryUrl": "https://github.com/emscripten-core/emscripten",
+                    "commitHash": "6ea9c28c38cdd40c1032fa04400c9d16230ee180"
+                }
+            },
+            "developmentDependency": false
+        }
+    ]
+}
