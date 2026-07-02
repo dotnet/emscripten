@@ -7,15 +7,6 @@
 //
 //===----------------------------------------------------------------------===//
 
-<<<<<<<< HEAD:system/lib/libcxx/include/__pstl_algorithm
-#ifndef __PSTL_ALGORITHM
-#define __PSTL_ALGORITHM
-
-#include <pstl/internal/glue_algorithm_impl.h>
-
-#endif /* __PSTL_ALGORITHM */
-========
 export {
   // This module exports nothing.
 } // export
->>>>>>>> 6.0.2:system/lib/libcxx/modules/std.compat/cassert.inc
