@@ -2396,3 +2396,98 @@ arch-specific bugs fixed:
 - sigaction signal mask was bogus on or1k, microblaze, mips, and riscv
 - powerpc-sf longjmp asm clobbered value argument
 - or1k poll function passed timeout to syscall in wrong form
+
+
+
+1.2.5 release notes
+
+new features:
+- statx function (linux extension; via syscall and fallback using fstatat)
+- clone function is now usable and gives _Fork-like consistency in child
+- statvfs now provides f_type result
+- preadv2 and pwritev2 (linux extension) syscall wrappers
+- riscv64 TLSDESC support
+
+new ports:
+- loongarch64
+- riscv32
+
+compatibility:
+- DNS resolver can now handle answers with long CNAME chains
+- string.h no longer provides (C23-incompat) non-prototype decl of basename
+- fstatat statx backend now matches stat syscall non-automounting behavior
+- mntent interfaces now handle escaped whitespace in paths/options
+
+standards updates:
+- printf %lc of nul wchar now produces output
+- snprintf and swprintf no longer fail on n > INT_MAX
+- ppoll is now exposed in default feature profile
+
+bugs fixed:
+- some long DNS answers were wrongly rejected despite new TCP support
+- glob could wrongly return GLOB_NOMATCH if aborted before any matches
+- multithreaded set*id could malfunction from thread sequencing logic bug
+- certain use of threads after fork could deadlock thread-list lock
+- posix_spawn child could deadlock in race with async parent death
+- mbrtowc return value was wrong if argument n exceeded UINT_MAX
+- 80-bit extended acoshl and powl got some corner cases wrong
+- syslog incorrectly generated localized timestamps
+
+arch-specific bugs fixed:
+- arm (32-bit) TLSDESC malfunctioned due to addends being processed wrong
+- riscv64 icache flush operation was non-functional
+- sh sigsetjmp failed to properly restore call-saved register r8 on return
+- sh dlsym RTLD_NEXT did not identify calling module correctly
+
+
+
+1.2.6 release notes
+
+new features:
+- posix_getdents interface (new in POSIX-2024)
+- renameat2 interface (linux extension)
+- iconv support for CP858
+- vdso clock_gettime for riscv{32,64}, powerpc{,64}, and s390x
+- loongarch64 TLSDESC support
+- exposed __getauxval for compiler runtime use detecting cpu features
+
+compatibility:
+- initgroups no longer artificially limits number of supplementary groups
+- getusershell now skips blank lines and comments
+- exit is now explicitly thread-safe (possible future requirement)
+- atexit now fails rather than deadlocking if called from late dtor
+- strerror now has error strings for EUCLEAN and ENAVAIL
+- isatty no longer collapses errors to ENOTTY
+- sched.h namespace pollution with _GNU_SOURCE is reduced
+- hasmntopt now matches only whole options, not arbitrary substrings
+- shadow.h no longer declares an unimplemented sgetspent interface
+- vdso with missing sysv hash table (only gnu hash) is now supported
+
+conformance:
+- pwrite now handles O_APPEND correctly, reports error if it can't
+- mbnrtowcs now conforms to new POSIX-2024 requirement for partial character
+- iconv GBK now properly includes euro symbol
+- strptime now accepts conversion specifiers added in POSIX-2024
+- inet_ntop IPv6 "zero compression" now conforms to RFC 5952
+
+bugs fixed:
+- iconv euc-kr decoder could do oob writes on invalid inputs (CVE-2025-26519)
+- iconv shift_jis decoder could produce wrong outputs for some invalid inputs
+- printf did not honor hex float precision correctly in some cases
+- lost or delayed wakes in sem_post under race condition
+- termios input speed handling was wrong
+- strcasestr failed to match zero-length needle
+- fma handled corner case with negative zero wrongly
+- syslog LOG_MAKEPRI macro was incorrect
+- timer_create is no longer affected by known pthread_barrier bugs
+- sysconf(_SC_MINSIGSTKSZ) computed min size incorrectly
+- statx emulation left some fields uninitialized
+- mntent wrongly included final newline in parsed field output
+- SIGEV_THREAD timers could abort process if SIGTIMER became unblocked
+- bind_textdomain_codeset returned wrong value
+
+arch-specific bugs fixed:
+- early dynamic linker handled page size wrong on dynamic pagesize archs
+- arm and aarch64 crti/n files had wrong alignment
+- m68k POLLWRNORM and POLLWRBAND values were incorrect
+- x32 mq ABI was mismatched

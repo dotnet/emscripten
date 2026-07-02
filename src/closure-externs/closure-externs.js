@@ -11,26 +11,14 @@
  * The closure_compiler() method in tools/shared.py refers to this file when calling closure.
  */
 
-// Special placeholder for `import.meta` and `await import`.
-var EMSCRIPTEN$IMPORT$META;
+// Special placeholder for `await import` and `await`.
 var EMSCRIPTEN$AWAIT$IMPORT;
+var EMSCRIPTEN$AWAIT;
 
 // Don't minify createRequire
 var createRequire;
 
-// Don't minify startWorker which we use to start workers once the runtime is ready.
-/**
- * @param {Object} Module
- */
-var startWorker = function(Module) {};
-
 // Closure externs used by library_sockfs.js
-
-/**
- * Backported from latest closure...
- * @see https://developer.mozilla.org/en-US/docs/Web/API/Document/currentScript
- */
-Document.prototype.currentScript;
 
 /**
  * Don't minify Math.*
@@ -62,28 +50,10 @@ Math.clz32 = function() {};
 Math.trunc = function() {};
 
 /**
- * Atomics
- */
-
-var Atomics = {};
-Atomics.compareExchange = function() {};
-Atomics.exchange = function() {};
-Atomics.wait = function() {};
-Atomics.notify = function() {};
-Atomics.load = function() {};
-Atomics.store = function() {};
-
-/**
  * @const
  * @suppress {duplicate, checkTypes}
  */
 var WebAssembly = {};
-/**
- * @constructor
- * @param {Object} globalDescriptor
- * @param {*=} value
- */
-WebAssembly.Global = function(globalDescriptor, value) {};
 /**
  * @param {!WebAssembly.Tag} tag
  * @param {number} index
@@ -102,16 +72,20 @@ WebAssembly.Exception.stack;
  * Note: Closure compiler does not support function overloading, omit this overload for now.
  * {function(!WebAssembly.Module, Object=):!Promise<!WebAssembly.Instance>}
  */
-/** @dict */
-WebAssembly.Instance.prototype.exports;
 /**
- * @type {!ArrayBuffer}
+ * @returns {ArrayBuffer}
  */
-WebAssembly.Memory.prototype.buffer;
+WebAssembly.Memory.prototype.toResizableBuffer = function() {};
 /**
- * @type {number}
+ * @param {!Function} func
+ * @returns {Function}
  */
-WebAssembly.Table.prototype.length;
+WebAssembly.promising = function(func) {};
+/**
+ * @constructor
+ * @param {!Function} func
+ */
+WebAssembly.Suspending = function(func) {};
 
 /**
  * @record
@@ -125,26 +99,13 @@ FunctionType.prototype.parameters;
  * @type {Array<string>}
  */
 FunctionType.prototype.results;
-/**
- * @record
- */
- function FunctionUsage() {}
- /**
-  * @type {string|undefined}
-  */
-FunctionUsage.prototype.promising;
- /**
-  * @type {string|undefined}
-  */
-FunctionUsage.prototype.suspending;
 
 /**
  * @constructor
  * @param {!FunctionType} type
  * @param {!Function} func
- * @param {FunctionUsage=} usage
  */
-WebAssembly.Function = function(type, func, usage) {};
+WebAssembly.Function = function(type, func) {};
 /**
  * @param {Function} func
  * @return {FunctionType}
@@ -196,14 +157,6 @@ var removeEventListener = function (type, listener) {};
  */
 var close;
 
-// Due to the way MODULARIZE works, Closure is run on generated code that does not define _scriptDir,
-// but only after MODULARIZE has finished, _scriptDir is injected to the generated code.
-// Therefore it cannot be minified.
-/**
- * @suppress {duplicate, undefinedVars}
- */
-var _scriptDir;
-
 // Closure run on asm.js uses a hack to execute only on shell code, declare externs needed for it.
 /**
  * @suppress {undefinedVars}
@@ -230,24 +183,14 @@ var event;
 var devicePixelRatio;
 
 /*
- * AudioWorkletGlobalScope globals
- */
-var registerProcessor = function(name, obj) {};
-var currentFrame;
-var currentTime;
-var sampleRate;
-
-/*
  * Avoid closure minifying anything to "id". See #13965
  */
 var id;
 
-var moduleArg;
-
 /**
  * This was removed from upstream closure compiler in
  * https://github.com/google/closure-compiler/commit/f83322c1b.
- * Perhaps we should remove it do?
+ * Perhaps we should remove it too?
  *
  * @param {MediaStreamConstraints} constraints A MediaStreamConstraints object.
  * @param {function(!MediaStream)} successCallback
@@ -260,3 +203,10 @@ var moduleArg;
  */
 Navigator.prototype.webkitGetUserMedia = function(
     constraints, successCallback, errorCallback) {};
+
+// Common between node-externs and v8-externs
+var os = {};
+
+AudioWorkletProcessor.parameterDescriptors;
+
+var scheduler = {};

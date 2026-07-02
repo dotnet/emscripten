@@ -7,6 +7,9 @@
 
 pid_t wait4(pid_t pid, int *status, int options, struct rusage *ru)
 {
+#ifdef __EMSCRIPTEN__ // XXX Emscripten revert musl commit 5850546e9669f793aab61dfc7c4f2c1ff35c4b29
+	return syscall(SYS_wait4, pid, status, options, ru);
+#else
 	int r;
 #ifdef SYS_wait4_time64
 	if (ru) {
@@ -26,7 +29,7 @@ pid_t wait4(pid_t pid, int *status, int options, struct rusage *ru)
 	}
 #endif
 	char *dest = ru ? (char *)&ru->ru_maxrss - 4*sizeof(long) : 0;
-	r = __syscall(SYS_wait4, pid, status, options, dest);
+	r = __sys_wait4(pid, status, options, dest);
 	if (r>0 && ru && sizeof(time_t) > sizeof(long)) {
 		long kru[4];
 		memcpy(kru, dest, 4*sizeof(long));
@@ -36,4 +39,5 @@ pid_t wait4(pid_t pid, int *status, int options, struct rusage *ru)
 			{ .tv_sec = kru[2], .tv_usec = kru[3] };
 	}
 	return __syscall_ret(r);
+#endif // __EMSCRIPTEN__
 }

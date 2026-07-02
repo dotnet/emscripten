@@ -21,14 +21,16 @@
 #include <sys/membarrier.h>
 #include "pthread_impl.h"
 #include "fork_impl.h"
+#include "libc.h"
 #include "dynlink.h"
 
 static size_t ldso_page_size;
-#ifndef PAGE_SIZE
+/* libc.h may have defined a macro for dynamic PAGE_SIZE already, but
+ * PAGESIZE is only defined if it's constant for the arch. */
+#ifndef PAGESIZE
+#undef PAGE_SIZE
 #define PAGE_SIZE ldso_page_size
 #endif
-
-#include "libc.h"
 
 #define malloc __libc_malloc
 #define calloc __libc_calloc
@@ -156,6 +158,8 @@ static struct fdpic_loadmap *app_loadmap;
 static struct fdpic_dummy_loadmap app_dummy_loadmap;
 
 struct debug *_dl_debug_addr = &debug;
+
+extern weak hidden char __ehdr_start[];
 
 extern hidden int __malloc_replaced;
 
@@ -358,19 +362,14 @@ static struct symdef get_lfs64(const char *name)
 		"pwritev\0readdir\0scandir\0sendfile\0setrlimit\0"
 		"stat\0statfs\0statvfs\0tmpfile\0truncate\0versionsort\0"
 		"__fxstat\0__fxstatat\0__lxstat\0__xstat\0";
-	size_t l;
-	char buf[16];
-	for (l=0; name[l]; l++) {
-		if (l >= sizeof buf) goto nomatch;
-		buf[l] = name[l];
-	}
 	if (!strcmp(name, "readdir64_r"))
 		return find_sym(&ldso, "readdir_r", 1);
-	if (l<2 || name[l-2]!='6' || name[l-1]!='4')
+	size_t l = strnlen(name, 18);
+	if (l<2 || name[l-2]!='6' || name[l-1]!='4' || name[l])
 		goto nomatch;
-	buf[l-=2] = 0;
 	for (p=lfs64_list; *p; p++) {
-		if (!strcmp(buf, p)) return find_sym(&ldso, buf, 1);
+		if (!strncmp(name, p, l-2) && !p[l-2])
+			return find_sym(&ldso, p, 1);
 		while (*p) p++;
 	}
 nomatch:
@@ -515,7 +514,7 @@ static void do_relocs(struct dso *dso, size_t *rel, size_t rel_size, size_t stri
 			break;
 #endif
 		case REL_TLSDESC:
-			if (stride<3) addend = reloc_addr[1];
+			if (stride<3) addend = reloc_addr[!TLSDESC_BACKWARDS];
 			if (def.dso->tls_id > static_tls_cnt) {
 				struct td_index *new = malloc(sizeof *new);
 				if (!new) {
@@ -540,13 +539,13 @@ static void do_relocs(struct dso *dso, size_t *rel, size_t rel_size, size_t stri
 					+ addend;
 #endif
 			}
-#ifdef TLSDESC_BACKWARDS
 			/* Some archs (32-bit ARM at least) invert the order of
 			 * the descriptor members. Fix them up here. */
-			size_t tmp = reloc_addr[0];
-			reloc_addr[0] = reloc_addr[1];
-			reloc_addr[1] = tmp;
-#endif
+			if (TLSDESC_BACKWARDS) {
+				size_t tmp = reloc_addr[0];
+				reloc_addr[0] = reloc_addr[1];
+				reloc_addr[1] = tmp;
+			}
 			break;
 		default:
 			error("Error relocating %s: unsupported relocation type %d",
@@ -617,6 +616,7 @@ static void reclaim_gaps(struct dso *dso)
 	for (; phcnt--; ph=(void *)((char *)ph+dso->phentsize)) {
 		if (ph->p_type!=PT_LOAD) continue;
 		if ((ph->p_flags&(PF_R|PF_W))!=(PF_R|PF_W)) continue;
+		if (ph->p_memsz == 0) continue;
 		reclaim(dso, ph->p_vaddr & -PAGE_SIZE, ph->p_vaddr);
 		reclaim(dso, ph->p_vaddr+ph->p_memsz,
 			ph->p_vaddr+ph->p_memsz+PAGE_SIZE-1 & -PAGE_SIZE);
@@ -1725,7 +1725,7 @@ hidden void __dls2(unsigned char *base, size_t *sp)
 	} else {
 		ldso.base = base;
 	}
-	Ehdr *ehdr = (void *)ldso.base;
+	Ehdr *ehdr = __ehdr_start ? (void *)__ehdr_start : (void *)ldso.base;
 	ldso.name = ldso.shortname = "libc.so";
 	ldso.phnum = ehdr->e_phnum;
 	ldso.phdr = laddr(&ldso, ehdr->e_phoff);

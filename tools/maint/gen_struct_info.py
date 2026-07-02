@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
-# coding=utf-8
 # Copyright 2013 The Emscripten Authors.  All rights reserved.
 # Emscripten is available under two separate licenses, the MIT license and the
 # University of Illinois/NCSA Open Source License.  Both these licenses can be
 # found in the LICENSE file.
 
-"""This tool extracts information about structs and defines from the C headers.
+"""Tools that extracts information about structs and defines from the C headers.
 
 The JSON input format is as follows:
 [
@@ -51,188 +50,156 @@ The JSON input format is as follows:
   }
 ]
 
-Please note that the 'f' for 'FLOAT_DEFINE' is just the format passed to printf(), you can put anything printf() understands.
-If you call this script with the flag "-f" and pass a header file, it will create an automated boilerplate for you.
+Please note that the 'f' for 'FLOAT_DEFINE' is just the format passed to printf(), you can put
+anything printf() understands.
 """
 
-import sys
+import argparse
+import json
 import os
 import re
-import json
-import argparse
-import tempfile
+import shlex
 import subprocess
+import sys
+import tempfile
 
 __scriptdir__ = os.path.dirname(os.path.abspath(__file__))
-__rootdir__ = os.path.dirname(os.path.dirname(__scriptdir__))
+__rootdir__ = os.path.dirname(__scriptdir__)
 sys.path.insert(0, __rootdir__)
 
-from tools import building
-from tools import config
-from tools import shared
-from tools import system_libs
-from tools import utils
-from tools.settings import settings
+from tools import config, shared, system_libs, utils
 
 QUIET = (__name__ != '__main__')
 DEBUG = False
 
+CFLAGS = [
+    # Avoid parsing problems due to gcc specific syntax.
+    '-D_GNU_SOURCE',
+]
 
-def show(msg):
+INTERNAL_CFLAGS = [
+    '-I' + utils.path_from_root('system/lib/libc/musl/arch/emscripten'),
+    '-I' + utils.path_from_root('system/lib/libc/musl/arch/generic'),
+    '-I' + utils.path_from_root('system/lib/libc/musl/src/internal'),
+    '-I' + utils.path_from_root('system/lib/libc/musl/src/include'),
+    '-I' + utils.path_from_root('system/lib/pthread/'),
+]
+
+CXXFLAGS = [
+    '-I' + utils.path_from_root('system/lib/libcxxabi/src'),
+    '-D__EMSCRIPTEN_EXCEPTIONS__',
+    '-I' + utils.path_from_root('system/lib/wasmfs/'),
+]
+
+DEFAULT_JSON_FILES = [
+    utils.path_from_root('src/struct_info.json'),
+    utils.path_from_root('src/struct_info_internal.json'),
+    utils.path_from_root('src/struct_info_cxx.json'),
+]
+
+
+def show(msg, *args):
   if shared.DEBUG or not QUIET:
-    sys.stderr.write('gen_struct_info: %s\n' % msg)
+    print('gen_struct_info:', msg, *args, file=sys.stderr)
 
 
-# The following three functions generate C code. The output of the compiled code will be
-# parsed later on and then put back together into a dict structure by parse_c_output().
+# The Scope class generates C code which, in turn, outputs JSON.
 #
 # Example:
-#   c_descent('test1', code)
-#   c_set('item', 'i%i', '111', code)
-#   c_set('item2', 'i%i', '9', code)
-#   c_set('item3', 's%s', '"Hello"', code)
-#   c_ascent(code)
-#   c_set('outer', 'f%f', '0.999', code)
-#
-# Will result in:
-#   {
-#     'test1': {
-#       'item': 111,
-#       'item2': 9,
-#       'item3': 'Hello',
-#     },
-#     'outer': 0.999
-#   }
-def c_set(name, type_, value, code):
-  code.append('printf("K' + name + '\\n");')
-  code.append('printf("V' + type_ + '\\n", ' + value + ');')
+#   with Scope(code) as scope: # generates code that outputs beginning of a JSON object '{\n'
+#     scope.set('item', '%i', '111') # generates code that outputs '"item": 111'
+#     scope.set('item2', '%f', '4.2') # generates code that outputs ',\n"item2": 4.2'
+#   # once the scope is exited, it generates code that outputs the end of the JSON object '\n}'
+class Scope:
+  def __init__(self, code: list[str]):
+    self.code = code
+    self.has_data = False
 
+  def __enter__(self):
+    self.code.append('puts("{");')
+    return self
 
-def c_descent(name, code):
-  code.append('printf("D' + name + '\\n");')
+  def __exit__(self, _exc_type, _exc_val, _exc_tb):
+    if self.has_data:
+      self.code.append('puts("");')
+    self.code.append('printf("}");')
 
-
-def c_ascent(code):
-  code.append('printf("A\\n");')
-
-
-def parse_c_output(lines):
-  result = {}
-  cur_level = result
-  parent = []
-  key = None
-
-  for line in lines:
-    arg = line[1:].strip()
-    if '::' in arg:
-      arg = arg.split('::', 1)[1]
-    if line[0] == 'K':
-      # This is a key
-      key = arg
-    elif line[0] == 'V':
-      # A value
-      if arg[0] == 'i':
-        arg = int(arg[1:])
-      elif arg[0] == 'f':
-        arg = float(arg[1:])
-      elif arg[0] == 's':
-        arg = arg[1:]
-
-      cur_level[key] = arg
-    elif line[0] == 'D':
-      # Remember the current level as the last parent.
-      parent.append(cur_level)
-
-      # We descend one level.
-      cur_level[arg] = {}
-      cur_level = cur_level[arg]
-    elif line[0] == 'A':
-      # We return to the parent dict. (One level up.)
-      cur_level = parent.pop()
-
-  return result
-
-
-def gen_inspect_code(path, struct, code):
-  if path[0][-1] == '#':
-    path[0] = path[0].rstrip('#')
-    prefix = ''
-  else:
-    prefix = 'struct '
-
-  c_descent(path[-1], code)
-
-  if len(path) == 1:
-    c_set('__size__', 'i%zu', 'sizeof (' + prefix + path[0] + ')', code)
-  else:
-    c_set('__size__', 'i%zu', 'sizeof ((' + prefix + path[0] + ' *)0)->' + '.'.join(path[1:]), code)
-    # c_set('__offset__', 'i%zu', 'offsetof(' + prefix + path[0] + ', ' + '.'.join(path[1:]) + ')', code)
-
-  for field in struct:
-    if isinstance(field, dict):
-      # We have to recurse to inspect the nested dict.
-      fname = list(field.keys())[0]
-      gen_inspect_code(path + [fname], field[fname], code)
+  def _start_child(self, name: str):
+    if self.has_data:
+      self.code.append('puts(",");')
     else:
-      c_set(field, 'i%zu', 'offsetof(' + prefix + path[0] + ', ' + '.'.join(path[1:] + [field]) + ')', code)
+      self.has_data = True
+    if '::' in name:
+      name = name.split('::', 1)[1]
+    self.code.append(fr'printf("\"{name}\": ");')
 
-  c_ascent(code)
+  def child(self, name: str):
+    self._start_child(name)
+    return Scope(self.code)
+
+  def set(self, name: str, type_: str, value: str):
+    self._start_child(name)
+
+    assert type_.startswith('%')
+    # We only support numeric defines as they are directly compatible with JSON.
+    # Extend to string escaping if we ever need that in the future.
+    assert type_[-1] in {'d', 'i', 'u', 'f', 'F', 'e', 'E'}
+
+    self.code.append(f'printf("{type_}", {value});')
+
+  def gen_inspect_code(self, path: list[str], struct: list[str | dict]):
+    if path[0][-1] == '#':
+      path[0] = path[0].rstrip('#')
+      prefix = ''
+    else:
+      prefix = 'struct '
+    prefix += path[0]
+
+    with self.child(path[-1]) as scope:
+      path_for_sizeof = [f'({prefix}){{}}', *path[1:]]
+      scope.set('__size__', '%zu', f'sizeof ({".".join(path_for_sizeof)})')
+
+      for field in struct:
+        if isinstance(field, dict):
+          # We have to recurse to inspect the nested dict.
+          fname = list(field.keys())[0]
+          self.gen_inspect_code([*path, fname], field[fname])
+        else:
+          member = ".".join([*path[1:], field])
+          scope.set(field, '%zu', f'offsetof({prefix}, {member})')
 
 
-def inspect_headers(headers, cflags):
+def generate_c_code(headers):
   code = ['#include <stdio.h>', '#include <stddef.h>']
-  for header in headers:
-    code.append('#include "' + header['name'] + '"')
+
+  code.extend(f'''#include "{header['name']}"''' for header in headers)
 
   code.append('int main() {')
-  c_descent('structs', code)
-  for header in headers:
-    for name, struct in header['structs'].items():
-      gen_inspect_code([name], struct, code)
 
-  c_ascent(code)
-  c_descent('defines', code)
-  for header in headers:
-    for name, type_ in header['defines'].items():
-      # Add the necessary python type, if missing.
-      if '%' not in type_:
-        if type_[-1] in ('d', 'i', 'u'):
-          # integer
-          type_ = 'i%' + type_
-        elif type_[-1] in ('f', 'F', 'e', 'E', 'g', 'G'):
-          # float
-          type_ = 'f%' + type_
-        elif type_[-1] in ('x', 'X', 'a', 'A', 'c', 's'):
-          # hexadecimal or string
-          type_ = 's%' + type_
+  with Scope(code) as root:
+    with root.child('structs') as structs:
+      for header in headers:
+        for name, struct in header['structs'].items():
+          structs.gen_inspect_code([name], struct)
 
-      c_set(name, type_, name, code)
+    with root.child('defines') as defines:
+      for header in headers:
+        for name, type_ in header['defines'].items():
+          # Add the necessary python type, if missing.
+          if '%' not in type_:
+            type_ = f'%{type_}'
+
+          defines.set(name, type_, name)
+
+  code.append('puts("");')  # Add a newline after the JSON output to flush it.
 
   code.append('return 0;')
   code.append('}')
 
-  # Write the source code to a temporary file.
-  src_file = tempfile.mkstemp('.c', text=True)
-  show('Generating C code... ' + src_file[1])
-  os.write(src_file[0], '\n'.join(code).encode())
+  return code
 
-  js_file = tempfile.mkstemp('.js')
 
-  # Check sanity early on before populating the cache with libcompiler_rt
-  # If we don't do this the parallel build of compiler_rt will run while holding the cache
-  # lock and with EM_EXCLUSIVE_CACHE_ACCESS set causing N processes to race to run sanity checks.
-  # While this is not in itself serious problem it is wasteful and noise on stdout.
-  # For the same reason we run this early in embuilder.py and emcc.py.
-  # TODO(sbc): If we can remove EM_EXCLUSIVE_CACHE_ACCESS then this would not longer be needed.
-  shared.check_sanity()
-
-  compiler_rt = system_libs.Library.get_usable_variations()['libcompiler_rt'].build()
-
-  # Close all unneeded FDs.
-  os.close(src_file[0])
-  os.close(js_file[0])
-
-  info = []
+def generate_cmd(js_file_path, src_file_path, cflags):
   # Compile the program.
   show('Compiling generated code...')
 
@@ -241,19 +208,17 @@ def inspect_headers(headers, cflags):
   else:
     compiler = shared.EMCC
 
-  node_flags = building.get_emcc_node_flags(shared.check_node_version())
-
   # -O1+ produces calls to iprintf, which libcompiler_rt doesn't support
-  cmd = [compiler] + cflags + ['-o', js_file[1], src_file[1],
-                               '-O0',
-                               '-Werror',
-                               '-Wno-format',
-                               '-nostdlib',
-                               compiler_rt,
-                               '-sBOOTSTRAPPING_STRUCT_INFO',
-                               '-sINCOMING_MODULE_JS_API=',
-                               '-sSTRICT',
-                               '-sASSERTIONS=0'] + node_flags
+  cmd = [compiler, *cflags, '-o', js_file_path, src_file_path,
+         '-O0',
+         '-Werror',
+         '-Wno-format',
+         '-sBOOTSTRAPPING_STRUCT_INFO',
+         '-sWASM_ASYNC_COMPILATION=0',
+         '-sINCOMING_MODULE_JS_API=',
+         '-sSTRICT',
+         '-sSUPPORT_LONGJMP=0',
+         '-sASSERTIONS=0']
 
   # Default behavior for emcc is to warn for binaryen version check mismatches
   # so we should try to match that behavior.
@@ -262,15 +227,24 @@ def inspect_headers(headers, cflags):
   # TODO(sbc): Remove this one we remove the test_em_config_env_var test
   cmd += ['-Wno-deprecated']
 
-  if settings.LTO:
-    cmd += ['-flto=' + settings.LTO]
+  show(shlex.join(cmd))
+  return cmd
 
-  if settings.MEMORY64:
-    # Always use =2 here so that we don't generate binar that actually requires
-    # memeory64 to run.  All we care about is that the output is correct.
-    cmd += ['-sMEMORY64=2', '-Wno-experimental']
 
-  show(shared.shlex_join(cmd))
+def inspect_headers(headers, cflags):
+  # Write the source code to a temporary file.
+  src_file_fd, src_file_path = tempfile.mkstemp('.c', text=True)
+  show('Generating C code... ' + src_file_path)
+  code = generate_c_code(headers)
+  os.write(src_file_fd, '\n'.join(code).encode())
+  os.close(src_file_fd)
+
+  js_file_fd, js_file_path = tempfile.mkstemp('.js')
+  # Close the unneeded FD.
+  os.close(js_file_fd)
+
+  cmd = generate_cmd(js_file_path, src_file_path, cflags)
+
   try:
     subprocess.check_call(cmd, env=system_libs.clean_env())
   except subprocess.CalledProcessError as e:
@@ -278,23 +252,20 @@ def inspect_headers(headers, cflags):
     sys.exit(1)
 
   # Run the compiled program.
-  show('Calling generated program... ' + js_file[1])
-  args = []
-  if settings.MEMORY64:
-    args += shared.node_bigint_flags(config.NODE_JS)
-  info = shared.run_js_tool(js_file[1], node_args=args, stdout=shared.PIPE).splitlines()
+  show('Running generated program... ' + js_file_path, config.NODE_JS)
+  info = shared.run_js_tool(js_file_path, stdout=shared.PIPE)
 
   if not DEBUG:
     # Remove all temporary files.
-    os.unlink(src_file[1])
+    os.unlink(src_file_path)
 
-    if os.path.exists(js_file[1]):
-      os.unlink(js_file[1])
-      wasm_file = shared.replace_suffix(js_file[1], '.wasm')
-      os.unlink(wasm_file)
+    if os.path.exists(js_file_path):
+      os.unlink(js_file_path)
+      wasm_file_path = utils.replace_suffix(js_file_path, '.wasm')
+      os.unlink(wasm_file_path)
 
   # Parse the output of the program into a dict.
-  return parse_c_output(info)
+  return json.loads(info)
 
 
 def merge_info(target, src):
@@ -322,7 +293,7 @@ def inspect_code(headers, cflags):
 def parse_json(path):
   header_files = []
 
-  with open(path, 'r') as stream:
+  with open(path, encoding='utf-8') as stream:
     # Remove comments before loading the JSON.
     data = json.loads(re.sub(r'//.*\n', '', stream.read()))
 
@@ -330,8 +301,8 @@ def parse_json(path):
     data = [data]
 
   for item in data:
-    for key in item.keys():
-      if key not in ['file', 'defines', 'structs']:
+    for key in item:
+      if key not in {'file', 'defines', 'structs'}:
         raise 'Unexpected key in json file: %s' % key
 
     header = {'name': item['file'], 'structs': {}, 'defines': {}}
@@ -365,15 +336,10 @@ def output_json(obj, stream):
 def main(args):
   global QUIET
 
-  default_json_files = [
-      utils.path_from_root('src/struct_info.json'),
-      utils.path_from_root('src/struct_info_internal.json'),
-      utils.path_from_root('src/struct_info_cxx.json'),
-  ]
   parser = argparse.ArgumentParser(description='Generate JSON infos for structs.')
   parser.add_argument('json', nargs='*',
                       help='JSON file with a list of structs and their fields (defaults to src/struct_info.json)',
-                      default=default_json_files)
+                      default=DEFAULT_JSON_FILES)
   parser.add_argument('-q', dest='quiet', action='store_true', default=False,
                       help='Don\'t output anything besides error messages.')
   parser.add_argument('-o', dest='output', metavar='path', default=None,
@@ -390,34 +356,22 @@ def main(args):
 
   QUIET = args.quiet
 
-  # Avoid parsing problems due to gcc specifc syntax.
-  cflags = ['-D_GNU_SOURCE']
+  extra_cflags = []
 
   if args.wasm64:
-    settings.MEMORY64 = 2
+    # Always use =2 here so that we don't generate a binary that actually requires
+    # memory64 to run.  All we care about is that the output is correct.
+    extra_cflags += ['-sMEMORY64=2']
 
   # Add the user options to the list as well.
   for path in args.includes:
-    cflags.append('-I' + path)
+    extra_cflags.append('-I' + path)
 
   for arg in args.defines:
-    cflags.append('-D' + arg)
+    extra_cflags.append('-D' + arg)
 
   for arg in args.undefines:
-    cflags.append('-U' + arg)
-
-  internal_cflags = [
-    '-I' + utils.path_from_root('system/lib/libc/musl/src/internal'),
-    '-I' + utils.path_from_root('system/lib/libc/musl/src/include'),
-    '-I' + utils.path_from_root('system/lib/pthread/'),
-  ]
-
-  cxxflags = [
-    '-I' + utils.path_from_root('system/lib/libcxxabi/src'),
-    '-D__USING_EMSCRIPTEN_EXCEPTIONS__',
-    '-I' + utils.path_from_root('system/lib/wasmfs/'),
-    '-std=c++17',
-  ]
+    extra_cflags.append('-U' + arg)
 
   # Look for structs in all passed headers.
   info = {'defines': {}, 'structs': {}}
@@ -427,22 +381,22 @@ def main(args):
     header_files = parse_json(f)
     # Inspect all collected structs.
     if 'internal' in f:
-      use_cflags = cflags + internal_cflags
+      use_cflags = CFLAGS + extra_cflags + INTERNAL_CFLAGS
     elif 'cxx' in f:
-      use_cflags = cflags + cxxflags
+      use_cflags = CFLAGS + extra_cflags + CXXFLAGS
     else:
-      use_cflags = cflags
+      use_cflags = CFLAGS + extra_cflags
     info_fragment = inspect_code(header_files, use_cflags)
     merge_info(info, info_fragment)
 
   if args.output:
     output_file = args.output
   elif args.wasm64:
-    output_file = utils.path_from_root('src/generated_struct_info64.json')
+    output_file = utils.path_from_root('src/struct_info_generated_wasm64.json')
   else:
-    output_file = utils.path_from_root('src/generated_struct_info32.json')
+    output_file = utils.path_from_root('src/struct_info_generated.json')
 
-  with open(output_file, 'w') as f:
+  with open(output_file, 'w', encoding='utf-8') as f:
     output_json(info, f)
 
   return 0

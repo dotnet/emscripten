@@ -1,6 +1,0 @@
-Testing async proxying
-Testing sync proxying
-Testing sync_with_ctx proxying
-Testing callback proxying
-Testing callback_with_ctx proxying
-done

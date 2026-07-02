@@ -284,10 +284,11 @@ fs.readdir = function(path, callback) {};
 
 /**
  * @param {string} path
- * @return {Array.<string>}
+ * @param {{withFileTypes: boolean}=} options
+ * @return {!Array.<string|!Object>}
  * @nosideeffects
  */
-fs.readdirSync = function(path) {};
+fs.readdirSync = function(path, options) {};
 
 /**
  * @param {*} fd
@@ -373,10 +374,12 @@ fs.write = function(fd, buffer, offset, length, position, callback) {};
 /**
  * @param {*} fd
  * @param {*} buffer
- * @param {Object.<string,number>=} options
+ * @param {number=} offset
+ * @param {number=} length
+ * @param {number=} position
  * @return {number}
  */
-fs.writeSync = function(fd, buffer, options) {};
+fs.writeSync = function(fd, buffer, offset, length, position) {};
 
 /**
  * @param {*} fd
@@ -391,11 +394,13 @@ fs.read = function(fd, buffer, offset, length, position, callback) {};
 /**
  * @param {*} fd
  * @param {*} buffer
- * @param {Object.<string,number>=} options
+ * @param {number} offset
+ * @param {number} length
+ * @param {number=} position
  * @return {number}
  * @nosideeffects
  */
-fs.readSync = function(fd, buffer, options) {};
+fs.readSync = function(fd, buffer, offset, length, position) {};
 
 /**
  * @param {string} filename
