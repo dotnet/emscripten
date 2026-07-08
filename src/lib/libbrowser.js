@@ -6,6 +6,10 @@
 
 // Utilities for browser environments
 var LibraryBrowser = {
+  $workerHandles__internal: true,
+  $workerHandles__deps: ['$HandleAllocator'],
+  $workerHandles: 'new HandleAllocator();',
+
   $Browser__deps: [
     '$callUserCallback',
     '$getFullscreenElement',
@@ -24,7 +28,6 @@ var LibraryBrowser = {
     isFullscreen: false,
     pointerLock: false,
     moduleContextCreatedCallbacks: [],
-    workers: [],
     preloadedImages: {},
     preloadedAudios: {},
 
@@ -94,7 +97,7 @@ var LibraryBrowser = {
           var b = new Blob([byteArray], { type: Browser.getMimetype(name) });
           var url = URL.createObjectURL(b); // XXX we never revoke this!
           var audio = new Audio();
-          audio.addEventListener('canplaythrough', () => finish(audio), false); // use addEventListener due to chromium bug 124926
+          audio.addEventListener('canplaythrough', () => finish(audio)); // use addEventListener due to chromium bug 124926
           audio.onerror = (event) => {
             if (done) return;
             err(`warning: browser could not fully decode audio ${name}, trying slower base64 approach`);
@@ -146,16 +149,18 @@ var LibraryBrowser = {
         // forced aspect ratio can be enabled by defining 'forcedAspectRatio' on Module
         // Module['forcedAspectRatio'] = 4 / 3;
 
-        document.addEventListener('pointerlockchange', pointerLockChange, false);
+        document.addEventListener('pointerlockchange', pointerLockChange);
 
+#if expectToReceiveOnModule('elementPointerLock')
         if (Module['elementPointerLock']) {
           canvas.addEventListener("click", (ev) => {
             if (!Browser.pointerLock && Browser.getCanvas().requestPointerLock) {
               Browser.getCanvas().requestPointerLock();
               ev.preventDefault();
             }
-          }, false);
+          });
         }
+#endif
       }
     },
 
@@ -245,16 +250,18 @@ var LibraryBrowser = {
             Browser.updateCanvasDimensions(canvas);
           }
         }
+#if expectToReceiveOnModule('onFullScreen')
         Module['onFullScreen']?.(Browser.isFullscreen);
         Module['onFullscreen']?.(Browser.isFullscreen);
+#endif
       }
 
       if (!Browser.fullscreenHandlersInstalled) {
         Browser.fullscreenHandlersInstalled = true;
-        document.addEventListener('fullscreenchange', fullscreenChange, false);
-        document.addEventListener('mozfullscreenchange', fullscreenChange, false);
-        document.addEventListener('webkitfullscreenchange', fullscreenChange, false);
-        document.addEventListener('MSFullscreenChange', fullscreenChange, false);
+        document.addEventListener('fullscreenchange', fullscreenChange);
+        document.addEventListener('mozfullscreenchange', fullscreenChange);
+        document.addEventListener('webkitfullscreenchange', fullscreenChange);
+        document.addEventListener('MSFullscreenChange', fullscreenChange);
       }
 
       // create a new parent to ensure the canvas has no siblings. this allows browsers to optimize full screen performance when its parent is the full screen root
@@ -397,18 +404,8 @@ var LibraryBrowser = {
       var canvas = Browser.getCanvas();
       var rect = canvas.getBoundingClientRect();
 
-      // Neither .scrollX or .pageXOffset are defined in a spec, but
-      // we prefer .scrollX because it is currently in a spec draft.
-      // (see: http://www.w3.org/TR/2013/WD-cssom-view-20131217/)
-      var scrollX = ((typeof window.scrollX != 'undefined') ? window.scrollX : window.pageXOffset);
-      var scrollY = ((typeof window.scrollY != 'undefined') ? window.scrollY : window.pageYOffset);
-#if ASSERTIONS
-      // If this assert lands, it's likely because the browser doesn't support scrollX or pageXOffset
-      // and we have no viable fallback.
-      assert((typeof scrollX != 'undefined') && (typeof scrollY != 'undefined'), 'Unable to retrieve scroll position, mouse positions likely broken.');
-#endif
-      var adjustedX = pageX - (scrollX + rect.left);
-      var adjustedY = pageY - (scrollY + rect.top);
+      var adjustedX = pageX - (window.scrollX + rect.left);
+      var adjustedY = pageY - (window.scrollY + rect.top);
 
       // the canvas might be CSS-scaled compared to its backbuffer;
       // SDL-using content will want mouse coordinates in terms
@@ -517,6 +514,7 @@ var LibraryBrowser = {
       }
       var w = wNative;
       var h = hNative;
+#if expectToReceiveOnModule('forcedAspectRatio')
       if (Module['forcedAspectRatio'] > 0) {
         if (w/h < Module['forcedAspectRatio']) {
           w = Math.round(h * Module['forcedAspectRatio']);
@@ -524,6 +522,7 @@ var LibraryBrowser = {
           h = Math.round(w / Module['forcedAspectRatio']);
         }
       }
+#endif
       if ((getFullscreenElement() === canvas.parentNode) && (typeof screen != 'undefined')) {
          var factor = Math.min(screen.width / w, screen.height / h);
          w = Math.round(w * factor);
@@ -602,7 +601,7 @@ var LibraryBrowser = {
     FS.createPreloadedFile(
       '/',
       name,
-      {{{ makeHEAPView('U8', 'data', 'data + size') }}},
+      HEAPU8.subarray(data, data + size),
       true, true,
       () => {
         {{{ runtimeKeepalivePop() }}}
@@ -624,7 +623,7 @@ var LibraryBrowser = {
   },
 
   // TODO: currently not callable from a pthread, but immediately calls onerror() if not on main thread.
-  emscripten_async_load_script__deps: ['$UTF8ToString'],
+  emscripten_async_load_script__deps: ['$UTF8ToString', '$runDependencies', '$resolveRunDependencies'],
   emscripten_async_load_script: async (url, onload, onerror) => {
     url = UTF8ToString(url);
 #if PTHREADS
@@ -642,12 +641,7 @@ var LibraryBrowser = {
     var loadDone = () => {
       {{{ runtimeKeepalivePop() }}}
       if (onload) {
-        var onloadCallback = () => callUserCallback({{{ makeDynCall('v', 'onload') }}});
-        if (runDependencies > 0) {
-          dependenciesFulfilled = onloadCallback;
-        } else {
-          onloadCallback();
-        }
+        resolveRunDependencies().then(() => callUserCallback({{{ makeDynCall('v', 'onload') }}}));
       }
     }
 
@@ -727,20 +721,21 @@ var LibraryBrowser = {
 
   // To avoid creating worker parent->child chains, always proxies to execute on the main thread.
   emscripten_create_worker__proxy: 'sync',
-  emscripten_create_worker__deps: ['$UTF8ToString', 'realloc'],
+  emscripten_create_worker__deps: ['$UTF8ToString', 'realloc', '$workerHandles'],
   emscripten_create_worker: (url) => {
     url = UTF8ToString(url);
-    var id = Browser.workers.length;
+    var worker = new Worker(url);
     var info = {
-      worker: new Worker(url),
+      worker,
       callbacks: [],
       awaited: 0,
       buffer: 0,
     };
-    info.worker.onmessage = (msg) => {
+    var id = workerHandles.allocate(info);
+    worker.onmessage = (msg) => {
       if (ABORT) return;
-      var info = Browser.workers[id];
-      if (!info) return; // worker was destroyed meanwhile
+      if (!workerHandles.has(id)) return; // worker was destroyed meanwhile
+      var info = workerHandles.get(id);
       var callbackId = msg.data['callbackId'];
       var callbackInfo = info.callbacks[callbackId];
       if (!callbackInfo) return; // no callback or callback removed meanwhile
@@ -760,23 +755,23 @@ var LibraryBrowser = {
         callbackInfo.func(0, 0, callbackInfo.arg);
       }
     };
-    Browser.workers.push(info);
     return id;
   },
 
-  emscripten_destroy_worker__deps: ['free'],
+  emscripten_destroy_worker__deps: ['free', '$workerHandles'],
   emscripten_destroy_worker__proxy: 'sync',
   emscripten_destroy_worker: (id) => {
-    var info = Browser.workers[id];
+    var info = workerHandles.get(id);
     info.worker.terminate();
     _free(info.buffer);
-    Browser.workers[id] = null;
+    workerHandles.free(id);
   },
 
+  emscripten_call_worker__deps: ['$workerHandles'],
   emscripten_call_worker__proxy: 'sync',
   emscripten_call_worker: (id, funcName, data, size, callback, arg) => {
     funcName = UTF8ToString(funcName);
-    var info = Browser.workers[id];
+    var info = workerHandles.get(id);
     var callbackId = -1;
     if (callback) {
       // If we are waiting for a response from the worker we need to keep
@@ -794,7 +789,7 @@ var LibraryBrowser = {
     var transferObject = {
       'funcName': funcName,
       'callbackId': callbackId,
-      'data': data ? new Uint8Array({{{ makeHEAPView('U8', 'data', 'data + size') }}}) : 0
+      'data': data ? HEAPU8.slice(data, data + size) : 0
     };
     if (data) {
       info.worker.postMessage(transferObject, [transferObject.data.buffer]);
@@ -810,7 +805,7 @@ var LibraryBrowser = {
     var transferObject = {
       'callbackId': workerCallbackId,
       'finalResponse': false,
-      'data': data ? new Uint8Array({{{ makeHEAPView('U8', 'data', 'data + size') }}}) : 0
+      'data': data ? HEAPU8.slice(data, data + size) : 0
     };
     if (data) {
       postMessage(transferObject, [transferObject.data.buffer]);
@@ -826,7 +821,7 @@ var LibraryBrowser = {
     var transferObject = {
       'callbackId': workerCallbackId,
       'finalResponse': true,
-      'data': data ? new Uint8Array({{{ makeHEAPView('U8', 'data', 'data + size') }}}) : 0
+      'data': data ? HEAPU8.slice(data, data + size) : 0
     };
     if (data) {
       postMessage(transferObject, [transferObject.data.buffer]);
@@ -836,10 +831,11 @@ var LibraryBrowser = {
   },
 #endif
 
+  emscripten_get_worker_queue_size__deps: ['$workerHandles'],
   emscripten_get_worker_queue_size__proxy: 'sync',
   emscripten_get_worker_queue_size: (id) => {
-    var info = Browser.workers[id];
-    if (!info) return -1;
+    if (!workerHandles.has(id)) return -1;
+    var info = workerHandles.get(id);
     return info.awaited;
   },
 

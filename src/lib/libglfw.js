@@ -1243,16 +1243,18 @@ var LibraryGLFW = {
             Browser.updateResizeListeners();
           }
         }
+#if expectToReceiveOnModule('onFullScreen')
         Module['onFullScreen']?.(Browser.isFullscreen);
         Module['onFullscreen']?.(Browser.isFullscreen);
+#endif
       }
 
       if (!Browser.fullscreenHandlersInstalled) {
         Browser.fullscreenHandlersInstalled = true;
-        document.addEventListener('fullscreenchange', fullscreenChange, false);
-        document.addEventListener('mozfullscreenchange', fullscreenChange, false);
-        document.addEventListener('webkitfullscreenchange', fullscreenChange, false);
-        document.addEventListener('MSFullscreenChange', fullscreenChange, false);
+        document.addEventListener('fullscreenchange', fullscreenChange);
+        document.addEventListener('mozfullscreenchange', fullscreenChange);
+        document.addEventListener('webkitfullscreenchange', fullscreenChange);
+        document.addEventListener('MSFullscreenChange', fullscreenChange);
       }
 
       // create a new parent to ensure the canvas has no siblings. this allows browsers to optimize full screen performance when its parent is the full screen root
@@ -1283,6 +1285,7 @@ var LibraryGLFW = {
       }
       var w = wNative;
       var h = hNative;
+#if expectToReceiveOnModule('forcedAspectRatio')
       if (Module['forcedAspectRatio'] && Module['forcedAspectRatio'] > 0) {
         if (w/h < Module['forcedAspectRatio']) {
           w = Math.round(h * Module['forcedAspectRatio']);
@@ -1290,6 +1293,7 @@ var LibraryGLFW = {
           h = Math.round(w / Module['forcedAspectRatio']);
         }
       }
+#endif
       if ((getFullscreenElement() === canvas.parentNode) && (typeof screen != 'undefined')) {
         var factor = Math.min(screen.width / w, screen.height / h);
         w = Math.round(w * factor);
@@ -1320,18 +1324,8 @@ var LibraryGLFW = {
       // in the coordinates.
       const rect = Browser.getCanvas().getBoundingClientRect();
 
-      // Neither .scrollX or .pageXOffset are defined in a spec, but
-      // we prefer .scrollX because it is currently in a spec draft.
-      // (see: http://www.w3.org/TR/2013/WD-cssom-view-20131217/)
-      var scrollX = ((typeof window.scrollX != 'undefined') ? window.scrollX : window.pageXOffset);
-      var scrollY = ((typeof window.scrollY != 'undefined') ? window.scrollY : window.pageYOffset);
-#if ASSERTIONS
-      // If this assert lands, it's likely because the browser doesn't support scrollX or pageXOffset
-      // and we have no viable fallback.
-      assert((typeof scrollX != 'undefined') && (typeof scrollY != 'undefined'), 'Unable to retrieve scroll position, mouse positions likely broken.');
-#endif
-      var adjustedX = pageX - (scrollX + rect.left);
-      var adjustedY = pageY - (scrollY + rect.top);
+      var adjustedX = pageX - (window.scrollX + rect.left);
+      var adjustedY = pageY - (window.scrollY + rect.top);
 
       // getBoundingClientRect() returns dimension affected by CSS, so as a result:
       // - when CSS scaling is enabled, this will fix the mouse coordinates to match the width/height of the window

@@ -4,6 +4,8 @@
 # found in the LICENSE file.
 
 import base64
+import glob
+import hashlib
 import json
 import logging
 import os
@@ -41,7 +43,7 @@ from .settings import (
   settings,
   user_settings,
 )
-from .shared import DEBUG, DYLIB_EXTENSIONS, do_replace, in_temp
+from .shared import DEBUG, DYLIB_EXTENSIONS, do_replace, get_emscripten_temp_dir, in_temp
 from .toolchain_profiler import ToolchainProfiler
 from .utils import (
   WINDOWS,
@@ -211,11 +213,12 @@ def setup_environment_settings():
 
 
 def generate_js_sym_info():
-  """Runs the js compiler to generate a list of all symbols available in the JS
-  libraries.  This must be done separately for each linker invocation since the
-  list of symbols depends on what settings are used.
+  """Run the JS compiler to generate a list of all available JS symbols.
+
+  This must be done separately for each linker invocation since the list of
+  symbols depends on what settings are used.
   TODO(sbc): Find a way to optimize this.  Potentially we could add a super-set
-  mode of the js compiler that would generate a list of all possible symbols
+  mode of the JS compiler that would generate a list of all possible symbols
   that could be checked in.
   """
   output = emscripten.compile_javascript(symbols_only=True)
@@ -319,7 +322,6 @@ def get_binaryen_lowering_passes():
 
   # List of [<feature_name>, <lowering_flag>, <feature_flags>] triples.
   features = [
-    [Feature.SIGN_EXT, '--signext-lowering', ['--enable-sign-ext']],
     [Feature.NON_TRAPPING_FPTOINT, '--llvm-nontrapping-fptoint-lowering', ['--enable-nontrapping-float-to-int']],
     [Feature.BULK_MEMORY, '--llvm-memory-copy-fill-lowering', ['--enable-bulk-memory', '--enable-bulk-memory-opt']],
   ]
@@ -488,7 +490,7 @@ def setup_pthreads():
   # pthreads + dynamic linking has certain limitations
   if settings.MAIN_MODULE:
     diagnostics.warning('experimental', 'dynamic linking + pthreads is experimental')
-  if settings.ALLOW_MEMORY_GROWTH and not settings.GROWABLE_ARRAYBUFFERS:
+  if settings.ALLOW_MEMORY_GROWTH and settings.GROWABLE_ARRAYBUFFERS != 2:
     diagnostics.warning('pthreads-mem-growth', '-pthread + ALLOW_MEMORY_GROWTH may run non-wasm code slowly, see https://github.com/WebAssembly/design/issues/1271')
 
   default_setting('DEFAULT_PTHREAD_STACK_SIZE', settings.STACK_SIZE)
@@ -634,6 +636,9 @@ def add_system_js_lib(lib):
 def check_settings():
   for s, reason in DEPRECATED_SETTINGS.items():
     if s in user_settings:
+      if s == 'MEMORY64' and user_settings[s] == '2':
+        # Don't warn about -sMEMORY64=2 (since its the only way to enable the lowering pass)
+        continue
       diagnostics.warning('deprecated', f'{s} is deprecated ({reason}). Please open a bug if you have a continuing need for this setting')
 
   for name, msg in EXPERIMENTAL_SETTINGS.items():
@@ -760,27 +765,45 @@ def setup_sanitizers(options):
       # by SAFE_HEAP as a null pointer dereference.
       exit_with_error('ASan does not work with SAFE_HEAP')
 
-    if settings.MEMORY64:
-      exit_with_error('MEMORY64 does not yet work with ASAN')
-
   if settings.GENERATE_SOURCE_MAP:
     settings.LOAD_SOURCE_MAP = 1
 
 
 def get_dylibs(options, linker_args):
-  """Find all the Wasm dynamic libraries specified on the command line,
-  either via `-lfoo` or via `libfoo.so` directly."""
+  """Find all the Wasm dynamic libraries specified on the command line.
 
+  This can either be via `-lfoo` or via `libfoo.so` directly.
+  """
   dylibs = []
+  # Mimic the behavior of the native linker WRT to the `-Bstack/-Bdynamic` flags.
+  search_for_dylibs = True
   for arg in linker_args:
-    if arg.startswith('-l'):
-      for ext in DYLIB_EXTENSIONS:
-        path = find_library('lib' + arg[2:] + ext, options.lib_dirs)
-        if path and building.is_wasm_dylib(path):
-          dylibs.append(path)
+    if arg in {'-Bstatic', '-static'}:
+      search_for_dylibs = False
+    elif arg == '-Bdynamic':
+      search_for_dylibs = True
+    elif arg.startswith('-l'):
+      if search_for_dylibs:
+        for ext in DYLIB_EXTENSIONS:
+          path = find_library('lib' + arg[2:] + ext, options.lib_dirs)
+          if path and building.is_wasm_dylib(path):
+            dylibs.append(path)
     elif building.is_wasm_dylib(arg):
       dylibs.append(arg)
   return dylibs
+
+
+def setup_cross_origin_storage():
+  if not settings.ENVIRONMENT_MAY_BE_WEB:
+    exit_with_error('CROSS_ORIGIN_STORAGE requires a web environment (navigator.crossOriginStorage is not available outside the browser)')
+  origins = settings.CROSS_ORIGIN_STORAGE_ORIGINS
+  if '*' in origins and len(origins) > 1:
+    exit_with_error("CROSS_ORIGIN_STORAGE_ORIGINS: '*' must not be mixed with explicit origins")
+  for o in origins:
+    if o == '*':
+      continue
+    if not re.fullmatch(r'https://[^/]+(:\d+)?', o):
+      exit_with_error(f"CROSS_ORIGIN_STORAGE_ORIGINS: {o!r} is not a valid HTTPS origin (expected 'https://host' or 'https://host:port')")
 
 
 @ToolchainProfiler.profile_block('linker_setup')
@@ -793,22 +816,18 @@ def phase_linker_setup(options, linker_args):  # noqa: C901, PLR0912, PLR0915
 
   To revalidate these numbers, run `ruff check --select=C901,PLR091`.
   """
-
   setup_environment_settings()
 
   apply_library_settings(linker_args)
 
-  if settings.SIDE_MODULE or settings.MAIN_MODULE:
-    default_setting('FAKE_DYLIBS', 0)
-
   if options.shared and not settings.FAKE_DYLIBS:
     default_setting('SIDE_MODULE', 1)
 
-  if not settings.FAKE_DYLIBS:
+  if not settings.SIDE_MODULE and not settings.FAKE_DYLIBS:
     options.dylibs = get_dylibs(options, linker_args)
-    # If there are any dynamically linked libraries on the command line then
-    # need to enable `MAIN_MODULE` in order to produce JS code that can load them.
-    if not settings.MAIN_MODULE and not settings.SIDE_MODULE and options.dylibs:
+    # If there are any dynamic libraries on the command line then enable
+    # `MAIN_MODULE` by default in order to produce JS code that can load them.
+    if options.dylibs and not settings.MAIN_MODULE:
       default_setting('MAIN_MODULE', 2)
 
   linker_args += calc_extra_ldflags(options)
@@ -910,8 +929,6 @@ def phase_linker_setup(options, linker_args):  # noqa: C901, PLR0912, PLR0915
     if final_suffix in EXECUTABLE_EXTENSIONS:
       diagnostics.warning('emcc', '-shared/-r used with executable output suffix. This behaviour is deprecated.  Please remove -shared/-r to build an executable or avoid the executable suffix (%s) when building object files.' % final_suffix)
     else:
-      if options.shared and 'FAKE_DYLIBS' not in user_settings:
-        diagnostics.warning('emcc', 'linking a library with `-shared` will emit a static object file (FAKE_DYLIBS defaults to true).  If you want to build a runtime shared library use the SIDE_MODULE or FAKE_DYLIBS=0.')
       options.oformat = OFormat.OBJECT
 
   if not options.oformat:
@@ -932,7 +949,10 @@ def phase_linker_setup(options, linker_args):  # noqa: C901, PLR0912, PLR0915
   # When there is no final suffix or the suffix is `.out` (as in `a.out`) then default to
   # making the resulting file exectuable.
   if settings.ENVIRONMENT_MAY_BE_NODE and options.oformat == OFormat.JS and final_suffix in {'', '.out'}:
-    default_setting('EXECUTABLE', 1)
+    # autoconf handling above may have initialized the EXECUTABLE setting already, so only init default here
+    # if not yet set.
+    if not settings.EXECUTABLE:
+      default_setting('EXECUTABLE', 1)
 
   if settings.EXECUTABLE and not settings.ENVIRONMENT_MAY_BE_NODE:
     exit_with_error('EXECUTABLE requires `node` in ENVRIONMENT')
@@ -986,10 +1006,19 @@ def phase_linker_setup(options, linker_args):  # noqa: C901, PLR0912, PLR0915
       exit_with_error('MODULARIZE=instance requires EXPORT_ES6')
     if settings.MINIMAL_RUNTIME:
       exit_with_error('MODULARIZE=instance is not compatible with MINIMAL_RUNTIME')
-    if options.use_preload_plugins or len(options.preload_files):
+    if options.use_preload_plugins or options.preload_files:
       exit_with_error('MODULARIZE=instance is not compatible with --embed-file/--preload-file')
 
-  if settings.MINIMAL_RUNTIME and len(options.preload_files):
+  if settings.AUTO_INIT:
+    if settings.MODULARIZE != 'instance':
+      exit_with_error('AUTO_INIT requires MODULARIZE=instance or WASM_ESM_INTEGRATION')
+    # There is no `init`/`moduleArg` to configure the instance with, so any
+    # incoming module API is meaningless.
+    if 'INCOMING_MODULE_JS_API' in user_settings:
+      exit_with_error('AUTO_INIT is not compatible with INCOMING_MODULE_JS_API')
+    settings.INCOMING_MODULE_JS_API = []
+
+  if settings.MINIMAL_RUNTIME and options.preload_files:
     exit_with_error('MINIMAL_RUNTIME is not compatible with --preload-file')
 
   if options.oformat in {OFormat.WASM, OFormat.BARE}:
@@ -1040,6 +1069,7 @@ def phase_linker_setup(options, linker_args):  # noqa: C901, PLR0912, PLR0915
 
   if settings.PURE_WASI:
     settings.STANDALONE_WASM = 1
+    settings.ALLOW_MEMORY_GROWTH = 1
     settings.WASM_BIGINT = 1
     # WASI does not support Emscripten (JS-based) exception catching, which the
     # JS-based longjmp support also uses. Emscripten EH is by default disabled
@@ -1201,6 +1231,9 @@ def phase_linker_setup(options, linker_args):  # noqa: C901, PLR0912, PLR0915
   if settings.WASM == 2 and settings.SINGLE_FILE:
     exit_with_error('cannot have both WASM=2 and SINGLE_FILE enabled at the same time')
 
+  if settings.CROSS_ORIGIN_STORAGE:
+    setup_cross_origin_storage()
+
   if settings.MINIMAL_RUNTIME_STREAMING_WASM_COMPILATION and options.oformat != OFormat.HTML:
     exit_with_error('MINIMAL_RUNTIME_STREAMING_WASM_COMPILATION is only compatible with html output')
 
@@ -1244,8 +1277,8 @@ def phase_linker_setup(options, linker_args):  # noqa: C901, PLR0912, PLR0915
 
     settings.DEFAULT_LIBRARY_FUNCS_TO_INCLUDE += ['$ExitStatus']
 
-    # Certain configurations require the removeRunDependency/addRunDependency system.
-    if settings.LOAD_SOURCE_MAP or (settings.WASM_ASYNC_COMPILATION and not settings.MODULARIZE):
+    if settings.LOAD_SOURCE_MAP:
+      # Loading the source map uses the addRunDependency/removeRunDependency system.
       settings.DEFAULT_LIBRARY_FUNCS_TO_INCLUDE += ['$addRunDependency', '$removeRunDependency']
 
   if settings.ABORT_ON_WASM_EXCEPTIONS or settings.SPLIT_MODULE:
@@ -1297,6 +1330,15 @@ def phase_linker_setup(options, linker_args):  # noqa: C901, PLR0912, PLR0915
                                   'emscripten_stack_get_end',
                                   'emscripten_stack_get_current']
     settings.INCOMING_MODULE_JS_API += ['preRun']
+
+  if settings.GL_PREINITIALIZED_CONTEXT:
+    settings.INCOMING_MODULE_JS_API += ['preinitializedWebGLContext']
+
+  if settings.IMPORTED_MEMORY:
+    settings.INCOMING_MODULE_JS_API += ['INITIAL_MEMORY', 'wasmMemory']
+
+  if not settings.WASM_ASYNC_COMPILATION:
+    settings.INCOMING_MODULE_JS_API += ['wasmBinary']
 
   settings.ASYNCIFY_ADD = unmangle_symbols_from_cmdline(settings.ASYNCIFY_ADD)
   settings.ASYNCIFY_REMOVE = unmangle_symbols_from_cmdline(settings.ASYNCIFY_REMOVE)
@@ -1366,22 +1408,6 @@ def phase_linker_setup(options, linker_args):  # noqa: C901, PLR0912, PLR0915
 
   check_browser_versions()
 
-  if settings.POLYFILL:
-    # Emscripten requires certain ES6+ constructs by default in library code
-    # - (various ES6 operators available in all browsers listed below)
-    # - https://caniuse.com/mdn-javascript_operators_nullish_coalescing:
-    #                                          FF:72 CHROME:80 SAFARI:13.1 NODE:14
-    # - https://caniuse.com/mdn-javascript_operators_optional_chaining:
-    #                                          FF:74 CHROME:80 SAFARI:13.1 NODE:14
-    # - https://caniuse.com/mdn-javascript_operators_logical_or_assignment:
-    #                                          FF:79 CHROME:85 SAFARI:14 NODE:16
-    # Taking the highest requirements gives is our minimum:
-    #                             Max Version: FF:79 CHROME:85 SAFARI:14 NODE:16
-    # TODO: replace this with feature matrix in the future.
-    settings.TRANSPILE = (settings.MIN_FIREFOX_VERSION < 79 or
-                          settings.MIN_CHROME_VERSION < 85 or
-                          settings.MIN_SAFARI_VERSION < 140000)
-
   if settings.STB_IMAGE:
     # DOTNET: disable stb_image
     # settings.EXPORTED_FUNCTIONS += ['_stbi_load', '_stbi_load_from_memory', '_stbi_image_free']
@@ -1397,7 +1423,7 @@ def phase_linker_setup(options, linker_args):  # noqa: C901, PLR0912, PLR0915
   if settings.MIN_WEBGL_VERSION > settings.MAX_WEBGL_VERSION:
     exit_with_error('MIN_WEBGL_VERSION must be smaller or equal to MAX_WEBGL_VERSION!')
 
-  if options.use_preload_plugins or len(options.preload_files) or len(options.embed_files):
+  if options.use_preload_plugins or options.preload_files or options.embed_files:
     if settings.NODERAWFS:
       exit_with_error('--preload-file and --embed-file cannot be used with NODERAWFS which disables virtual filesystem')
     # if we include any files, or intend to use preload plugins, then we definitely need filesystem support
@@ -1547,10 +1573,8 @@ def phase_linker_setup(options, linker_args):  # noqa: C901, PLR0912, PLR0915
   # Such setting must be set before this point
   feature_matrix.apply_min_browser_versions()
 
-  # TODO(sbc): Find make a generic way to expose the feature matrix to JS
-  # compiler rather then adding them all ad-hoc as internal settings
-  settings.SUPPORTS_PROMISE_ANY = feature_matrix.caniuse(Feature.PROMISE_ANY)
-  default_setting('WASM_BIGINT', feature_matrix.caniuse(Feature.JS_BIGINT_INTEGRATION))
+  feature_matrix.auto_enable_features()
+
   if settings.WASM_BIGINT:
     settings.DEFAULT_LIBRARY_FUNCS_TO_INCLUDE += ['$HEAP64', '$HEAPU64']
 
@@ -1673,10 +1697,10 @@ def phase_linker_setup(options, linker_args):  # noqa: C901, PLR0912, PLR0915
     # Some browsers have issues using the WebGL2 garbage-free APIs when the
     # memory offsets are over 2^31 or 2^32
     # For firefox see: https://bugzil.la/1838218
-    if settings.MIN_FIREFOX_VERSION != feature_matrix.UNSUPPORTED and settings.MAXIMUM_MEMORY > 2 ** 31:
+    if settings.MIN_FIREFOX_VERSION < 151 and settings.MAXIMUM_MEMORY > 2 ** 31:
       settings.WEBGL_USE_GARBAGE_FREE_APIS = 0
     # For chrome see: https://crbug.com/324992397
-    if settings.MIN_CHROME_VERSION != feature_matrix.UNSUPPORTED and settings.MEMORY64 and settings.MAXIMUM_MEMORY > 2 ** 32:
+    if settings.MIN_CHROME_VERSION < 126 and settings.MEMORY64 and settings.MAXIMUM_MEMORY > 2 ** 32:
       settings.WEBGL_USE_GARBAGE_FREE_APIS = 0
     if settings.WEBGL_USE_GARBAGE_FREE_APIS and settings.MIN_WEBGL_VERSION >= 2:
       settings.INCLUDE_WEBGL1_FALLBACK = 0
@@ -1739,6 +1763,8 @@ def phase_linker_setup(options, linker_args):  # noqa: C901, PLR0912, PLR0915
       exit_with_error('wasm2js does not support WASM_BIGINT')
     if settings.CAN_ADDRESS_2GB:
       exit_with_error('wasm2js does not support >2gb address space')
+    # WASM2JS does not support GROWABLE_ARRAYBUFFERS at all
+    default_setting('GROWABLE_ARRAYBUFFERS', 0)
 
   if settings.NODE_CODE_CACHING:
     if settings.WASM_ASYNC_COMPILATION:
@@ -1814,6 +1840,8 @@ def phase_linker_setup(options, linker_args):  # noqa: C901, PLR0912, PLR0915
     # Node-specific settings only make sense if ENVIRONMENT_MAY_BE_NODE
     if settings.NODERAWFS:
       diagnostics.warning('unused-command-line-argument', 'NODERAWFS ignored since `node` not in `ENVIRONMENT`')
+    if settings.NODERAWSOCKETS:
+      diagnostics.warning('unused-command-line-argument', 'NODERAWSOCKETS ignored since `node` not in `ENVIRONMENT`')
     if settings.NODE_CODE_CACHING:
       diagnostics.warning('unused-command-line-argument', 'NODE_CODE_CACHING ignored since `node` not in `ENVIRONMENT`')
 
@@ -1848,7 +1876,7 @@ def phase_calculate_system_libraries(options):
 
 
 @ToolchainProfiler.profile_block('link')
-def phase_link(linker_args, wasm_target, js_syms):
+def phase_link(linker_args, linker_inputs, wasm_target, js_syms):
   logger.debug(f'linking: {linker_args}')
 
   # Make a final pass over settings.EXPORTED_FUNCTIONS to remove any
@@ -1870,11 +1898,12 @@ def phase_link(linker_args, wasm_target, js_syms):
     # TODO(sbc): Remove this double execution of wasm-ld if we ever find a way to
     # distinguish EMSCRIPTEN_KEEPALIVE exports from `--export-dynamic` exports.
     settings.LINKABLE = False
-    building.link_lld(linker_args, wasm_target, external_symbols=js_syms)
+    building.link_lld(linker_args, wasm_target, external_symbols=js_syms,
+                      linker_inputs=linker_inputs)
     settings.LINKABLE = True
     rtn = extract_metadata.extract_metadata(wasm_target)
 
-  building.link_lld(linker_args, wasm_target, external_symbols=js_syms)
+  building.link_lld(linker_args, wasm_target, external_symbols=js_syms, linker_inputs=linker_inputs)
   return rtn
 
 
@@ -1896,6 +1925,10 @@ def phase_post_link(options, in_wasm, wasm_target, target, js_syms, base_metadat
 
   settings.TARGET_JS_NAME = os.path.basename(js_target)
 
+  if settings.WASM_BINDGEN:
+    bindgen_jslib = building.run_wasm_bindgen(in_wasm)
+    settings.JS_LIBRARIES.append(bindgen_jslib)
+
   metadata = phase_emscript(in_wasm, wasm_target, js_syms, base_metadata)
 
   if settings.EMBIND_AOT:
@@ -1908,6 +1941,14 @@ def phase_post_link(options, in_wasm, wasm_target, target, js_syms, base_metadat
     phase_source_transforms(options)
 
   phase_binaryen(target, options, wasm_target)
+
+  # Compute the SHA-256 hash of the final wasm (after binaryen) and substitute
+  # the <<< WASM_HASH_VALUE >>> placeholder that preamble.js left in the JS.
+  if final_js and settings.CROSS_ORIGIN_STORAGE:
+    wasm_hash_value = hashlib.sha256(utils.read_binary(wasm_target)).hexdigest()
+    logger.debug(f'CROSS_ORIGIN_STORAGE: wasm SHA-256 = {wasm_hash_value}')
+    js_content = do_replace(read_file(final_js), '<<< WASM_HASH_VALUE >>>', wasm_hash_value)
+    write_file(final_js, js_content)
 
   # If we are not emitting any JS then we are all done now
   if options.oformat != OFormat.WASM:
@@ -1964,11 +2005,12 @@ def run_embind_gen(options, wasm_target, js_syms, extra_settings):
   settings.MIN_NODE_VERSION = feature_matrix.OLDEST_SUPPORTED_NODE
   settings.MINIMAL_RUNTIME = 0
   # Required function to trigger TS generation.
-  settings.DEFAULT_LIBRARY_FUNCS_TO_INCLUDE += ['$callRuntimeCallbacks', '$addRunDependency', '$removeRunDependency']
+  settings.DEFAULT_LIBRARY_FUNCS_TO_INCLUDE += ['$callRuntimeCallbacks']
   settings.EXPORT_ES6 = False
   # Disable proxying and thread pooling so a worker is not automatically created.
   settings.PROXY_TO_PTHREAD = False
   settings.PTHREAD_POOL_SIZE = 0
+  settings.GROWABLE_ARRAYBUFFERS = 0
   # Assume wasm support at binding generation time
   settings.WASM2JS = 0
   # Disable minify since the binaryen pass has not been run yet to change the
@@ -2027,7 +2069,12 @@ def phase_emit_tsd(options, wasm_target, js_target, js_syms, metadata):
   embind_tsd = ''
   if settings.EMBIND:
     embind_tsd = run_embind_gen(options, wasm_target, js_syms, {'EMBIND_AOT': False})
-  all_tsd = emscripten.create_tsd(metadata, embind_tsd)
+  bindgen_ts_files = []
+  if settings.WASM_BINDGEN:
+    bindgen_ts_files = glob.glob(get_emscripten_temp_dir() + '/bindgen_out/*.d.ts')
+    # This list comprehension then filters out any files that end with .wasm.d.ts.
+    bindgen_ts_files = [file for file in bindgen_ts_files if not file.endswith('.wasm.d.ts')]
+  all_tsd = emscripten.create_tsd(metadata, embind_tsd, bindgen_ts_files)
   out_file = os.path.join(os.path.dirname(js_target), filename)
   write_file(out_file, all_tsd)
 
@@ -2080,23 +2127,33 @@ def phase_source_transforms(options):
   final_js += '.tr.js'
   posix = not WINDOWS
   logger.debug('applying transform: %s', options.js_transform)
-  shared.check_call(remove_quotes(shlex.split(options.js_transform, posix=posix) + [os.path.abspath(final_js)]))
+  shared.check_call(remove_quotes([*shlex.split(options.js_transform, posix=posix), os.path.abspath(final_js)]))
   save_intermediate('transformed')
 
 
-# Unmangle previously mangled `import.meta` and `await import` references in
-# both main code and libraries.
-# See also: `preprocess` in parseTools.js.
+# Unmangle previously mangled `await` references in both
+# main code and libraries.
+# See also: `mangleUnsupportedSyntax` in parseTools.mjs.
 def fix_js_mangling(js_file):
-  # We don't apply these mangliings except in MODULARIZE/EXPORT_ES6 modes.
-  if not settings.MODULARIZE:
+  # Mangling only takes place under closure in MODULARIZE mode.
+  if not settings.MODULARIZE or not settings.USE_CLOSURE_COMPILER:
     return
 
   src = read_file(js_file)
-  write_file(js_file, src
-             .replace('EMSCRIPTEN$IMPORT$META', 'import.meta')
-             .replace('EMSCRIPTEN$AWAIT$IMPORT', 'await import')
-             .replace('EMSCRIPTEN$AWAIT(', 'await ('))
+
+  if settings.EXPORT_ES6:
+    # Safely matches 'EMSCRIPTEN$AWAIT' with any amount of surrounding
+    # whitespace around '||'
+    src = re.sub(r'EMSCRIPTEN\$AWAIT\s*\|\|\s*', 'await ', src)
+    # Remove the line containing `export{};`, which is inserted by
+    # Closure to mark the file as an ES6 module.
+    # https://github.com/google/closure-compiler/issues/4084#issuecomment-1505056519
+    # https://github.com/google/closure-compiler/blob/v20260401/src/com/google/javascript/jscomp/ConvertChunksToESModules.java#L111-L113
+    src = src.replace('export{};\n', '')
+
+  src = src.replace('EMSCRIPTEN$AWAIT(', 'await (')
+
+  write_file(js_file, src)
   save_intermediate('js-mangling')
 
 
@@ -2113,13 +2170,21 @@ def create_esm_wrapper(wrapper_file, support_target, wasm_target):
   wrapper.append('// in order to avoid issues with circular dependencies.')
   wrapper.append(f"import * as unused from './{settings.WASM_BINARY_FILE}';")
   support_url = f'./{os.path.basename(support_target)}'
-  if js_exports:
-    wrapper.append(f"export {{ default, {js_exports} }} from '{support_url}';")
+  if settings.AUTO_INIT:
+    # Self-initialize via top-level await and don't re-export `init`, freeing up
+    # the `default` export name for the program's own use.
+    if js_exports:
+      wrapper.append(f"export {{ {js_exports} }} from '{support_url}';")
+    wrapper.append(f"import init from '{support_url}';")
+    wrapper.append('await init();')
   else:
-    wrapper.append(f"export {{ default }} from '{support_url}';")
+    if js_exports:
+      wrapper.append(f"export {{ default, {js_exports} }} from '{support_url}';")
+    else:
+      wrapper.append(f"export {{ default }} from '{support_url}';")
 
-  if settings.ENVIRONMENT_MAY_BE_NODE:
-    wrapper.append(f'''
+    if settings.ENVIRONMENT_MAY_BE_NODE:
+      wrapper.append(f'''
 // When run as the main module under node, create the module directly.  This will
 // execute any startup code along with main (if it exists).
 import init from '{support_url}';
@@ -2300,7 +2365,7 @@ def phase_binaryen(target, options, wasm_target):
     # unsigning pass.
     # we also must do this after the asan or safe_heap instrumentation, as they
     # wouldn't be able to recognize patterns produced by the growth pass.
-    if settings.SHARED_MEMORY and settings.ALLOW_MEMORY_GROWTH and not settings.GROWABLE_ARRAYBUFFERS:
+    if settings.SHARED_MEMORY and settings.ALLOW_MEMORY_GROWTH and settings.GROWABLE_ARRAYBUFFERS != 2:
       with ToolchainProfiler.profile_block('apply_wasm_memory_growth'):
         final_js = building.apply_wasm_memory_growth(final_js)
 
@@ -2324,14 +2389,6 @@ def phase_binaryen(target, options, wasm_target):
       with ToolchainProfiler.profile_block('closure_compile'):
         final_js = building.closure_compiler(final_js, extra_closure_args=settings.CLOSURE_ARGS)
       save_intermediate('closure')
-
-    if settings.TRANSPILE:
-      with ToolchainProfiler.profile_block('transpile'):
-        final_js = building.transpile(final_js)
-      save_intermediate('transpile')
-      # Run acorn one more time to minify whitespace after babel runs
-      if settings.MINIFY_WHITESPACE:
-        final_js = building.acorn_optimizer(final_js, ['--minify-whitespace'])
 
   symbols_file = None
   if options.emit_symbol_map:
@@ -2559,7 +2616,7 @@ def minify_html(filename):
 
   logger.debug(f'minifying HTML file {filename}')
   size_before = os.path.getsize(filename)
-  shared.check_call(shared.get_npm_cmd('html-minifier-terser') + [filename, '-o', filename] + opts, env=shared.env_with_node_in_path())
+  shared.check_call([*shared.get_npm_cmd('html-minifier-terser'), filename, '-o', filename, *opts], env=shared.env_with_node_in_path())
 
   # HTML minifier will turn all null bytes into an escaped two-byte sequence "\0". Turn those back to single byte sequences.
   def unescape_nulls(filename):
@@ -2620,12 +2677,14 @@ def find_library(lib, lib_dirs):
 
 
 def map_to_js_libs(library_name):
-  """Given the name of a special Emscripten-implemented system library, returns an
-  pair containing
-  1. Array of absolute paths to JS library files, inside emscripten/src/ that corresponds to the
-     library name. `None` means there is no mapping and the library will be processed by the linker
-     as a require for normal native library.
-  2. Optional name of a corresponding native library to link in.
+  """Map a library name to one or more JS libraries.
+
+  Given the name of a special Emscripten-implemented system library, return a
+  list of absolute paths to JS library files, inside emscripten/src/, that
+  should be included.
+
+  'None' means there is no mapping and the library will be processed by the linker
+  as a require for normal native library.
   """
   # Some native libraries are implemented in Emscripten as system side JS libraries
   library_map = {
@@ -2773,7 +2832,7 @@ class ScriptSource:
     self.src = None
 
   def replacement(self):
-    """Returns the script tag to replace the {{{ SCRIPT }}} tag in the target"""
+    """Return the script tag to replace the {{{ SCRIPT }}} tag in the target."""
     assert (self.src or self.inline) and not (self.src and self.inline)
     if self.src:
       src = quote(self.src)
@@ -2922,13 +2981,13 @@ def move_file(src, dst):
 
 
 def binary_encode(filename):
-  """This function encodes the given binary byte array to a UTF-8 string, by
-  encoding each byte values as UTF-8, except for specific byte values that
+  """Encode the given binary byte array as a compact UTF-8 string.
+
+  Each byte value is encoded as UTF-8, except for specific byte values that
   are escaped as two bytes. This kind of encoding results in a string that will
   compress well by both gzip and brotli, unlike base64 encoding binary data
   would do.
   """
-
   data = utils.read_binary(filename)
 
   # Decide whether to enclose the generated binary data in single-quotes '' or
@@ -3004,7 +3063,7 @@ def package_files(options, target):
     rtn.append(object_file)
 
   cmd = building.get_command_with_possible_response_file(
-    [shared.FILE_PACKAGER, utils.replace_suffix(target, '.data')] + file_args)
+    [shared.FILE_PACKAGER, utils.replace_suffix(target, '.data'), *file_args])
   if options.preload_files:
     # Preloading files uses --pre-js code that runs before the module is loaded.
     file_code = shared.check_call(cmd, stdout=PIPE).stdout
@@ -3074,6 +3133,9 @@ def run(options, linker_args):
   # We have now passed the compile phase, allow reading/writing of all settings.
   settings.limit_settings(None)
 
+  linker_inputs = [f.value for f in linker_args if f.is_file]
+  linker_args = [f.value for f in linker_args]
+
   if settings.RUNTIME_LINKED_LIBS:
     linker_args += settings.RUNTIME_LINKED_LIBS
 
@@ -3091,7 +3153,7 @@ def run(options, linker_args):
   linker_args = phase_calculate_linker_inputs(options, linker_args)
 
   # Embed and preload files
-  if len(options.preload_files) or len(options.embed_files):
+  if options.preload_files or options.embed_files:
     linker_args += package_files(options, target)
 
   if options.oformat == OFormat.OBJECT:
@@ -3137,7 +3199,7 @@ def run(options, linker_args):
       settings.ASYNCIFY_IMPORTS_EXCEPT_JS_LIBS = settings.ASYNCIFY_IMPORTS[:]
       settings.ASYNCIFY_IMPORTS += ['*.' + x for x in js_info['asyncFuncs']]
 
-  base_metadata = phase_link(linker_args, wasm_target, js_syms)
+  base_metadata = phase_link(linker_args, linker_inputs, wasm_target, js_syms)
 
   # Special handling for when the user passed '-Wl,--version'.  In this case the linker
   # does not create the output file, but just prints its version and exits with 0.

@@ -3,12 +3,14 @@
 # University of Illinois/NCSA Open Source License.  Both these licenses can be
 # found in the LICENSE file.
 
-"""A small wrapper script around the core JS compiler. This calls that
-compiler with the settings given to it. It can also read data from C/C++
-header files (so that the JS compiler can see the constants in those
+"""A small wrapper script around the core JS compiler.
+
+This calls that compiler with the settings given to it. It can also read data
+from C/C++ header files (so that the JS compiler can see the constants in those
 headers, for the libc implementation in JS).
 """
 
+import fnmatch
 import glob
 import hashlib
 import json
@@ -32,6 +34,7 @@ from tools import (
   utils,
   webassembly,
 )
+from tools.native_sigs import native_sigs
 from tools.settings import settings, user_settings
 from tools.shared import DEBUG, asmjs_mangle, in_temp
 from tools.toolchain_profiler import ToolchainProfiler
@@ -123,7 +126,7 @@ def update_settings_glue(wasm_file, metadata, base_metadata):
     settings.WASM_EXPORTS += ['__asyncify_state', '__asyncify_data']
 
   # start with the MVP features, and add any detected features.
-  building.binaryen_features = ['--mvp-features'] + metadata.features
+  building.binaryen_features = ['--mvp-features', *metadata.features]
   if settings.ASYNCIFY == 2:
     building.binaryen_features += ['--enable-reference-types']
 
@@ -207,12 +210,6 @@ def generate_js_compiler_input_hash(symbols_only=False):
 
 @ToolchainProfiler.profile()
 def compile_javascript(symbols_only=False):
-  stderr_file = os.environ.get('EMCC_STDERR_FILE')
-  if stderr_file:
-    stderr_file = os.path.abspath(stderr_file)
-    logger.info('logging stderr in js compiler phase into %s' % stderr_file)
-    stderr_file = open(stderr_file, 'w', encoding='utf-8')
-
   # Save settings to a file to work around v8 issue 1579
   settings_json = json.dumps(settings.external_dict(), sort_keys=True, indent=2)
   building.write_intermediate(settings_json, 'settings.json')
@@ -222,7 +219,7 @@ def compile_javascript(symbols_only=False):
   if symbols_only:
     args += ['--symbols-only']
   return shared.run_js_tool(path_from_root('tools/compiler.mjs'),
-                            args, input=settings_json, stdout=subprocess.PIPE, stderr=stderr_file)
+                            args, input=settings_json, stdout=subprocess.PIPE)
 
 
 def set_memory(static_bump):
@@ -301,9 +298,9 @@ def trim_asm_const_body(body):
 
 
 def get_cached_file(filetype, filename, generator, cache_limit):
-  """This function implements a file cache which lives inside the main
-  emscripten cache directory but uses a per-file lock rather than a
-  cache-wide lock.
+  """Implement a file cache which lives inside the main emscripten cache directory.
+
+  The defference here is that we use a per-file lock rather than a cache-wide lock.
 
   The cache is pruned (by removing the oldest files) if it grows above
   a certain number of files.
@@ -344,7 +341,8 @@ def compile_javascript_cached():
   # this step is performed while the cache is locked.
   # Sadly we have to skip the caching whenever we have user JS libraries.  This is because
   # these libraries can import arbitrary other JS files (either vis node's `import` or via #include)
-  if DEBUG or settings.BOOTSTRAPPING_STRUCT_INFO or config.FROZEN_CACHE or settings.JS_LIBRARIES:
+  has_user_libs = any(not lib.startswith(utils.path_from_root('src/')) for lib in settings.JS_LIBRARIES)
+  if DEBUG or settings.BOOTSTRAPPING_STRUCT_INFO or config.FROZEN_CACHE or has_user_libs:
     return compile_javascript()
 
   content_hash = generate_js_compiler_input_hash()
@@ -401,13 +399,13 @@ def emscript(in_wasm, out_wasm, outfile_js, js_syms, finalize=True, base_metadat
     # check_call doesn't support the `input` argument.
     if asm_consts:
       validate = '\n'.join([f'var tmp = {f};' for _, f in asm_consts])
-      proc = subprocess.run(config.NODE_JS + ['--check', '-'], input=validate.encode('utf-8'))
+      proc = subprocess.run([*config.NODE_JS, '--check', '-'], input=validate.encode('utf-8'))
       if proc.returncode:
         exit_with_error(f'EM_ASM function validation failed (node returned {proc.returncode})')
 
     if em_js_funcs:
       validate = '\n'.join(em_js_funcs)
-      proc = subprocess.run(config.NODE_JS + ['--check', '-'], input=validate.encode('utf-8'))
+      proc = subprocess.run([*config.NODE_JS, '--check', '-'], input=validate.encode('utf-8'))
       if proc.returncode:
         exit_with_error(f'EM_JS function validation failed (node returned {proc.returncode})')
 
@@ -540,7 +538,9 @@ def finalize_wasm(infile, outfile, js_syms):
     args.append('--side-module')
   if settings.STACK_OVERFLOW_CHECK >= 2:
     args.append('--check-stack-overflow')
+    # The check-stack pass in binaryen needs to be able to locate `__stack_pointer` by name.
     modify_wasm = True
+    need_name_section = True
   if settings.STANDALONE_WASM:
     args.append('--standalone-wasm')
 
@@ -610,7 +610,7 @@ def finalize_wasm(infile, outfile, js_syms):
   unexpected_exports = [asmjs_mangle(e) for e in unexpected_exports]
   unexpected_exports = [e for e in unexpected_exports if e not in expected_exports]
 
-  if not settings.STANDALONE_WASM and 'main' in metadata.all_exports or '__main_argc_argv' in metadata.all_exports:
+  if (not settings.STANDALONE_WASM and 'main' in metadata.all_exports) or '__main_argc_argv' in metadata.all_exports:
     if 'EXPORTED_FUNCTIONS' in user_settings and '_main' not in settings.USER_EXPORTS:
       # If `_main` was unexpectedly exported we assume it was added to
       # EXPORT_IF_DEFINED by `phase_linker_setup` in order that we can detect
@@ -655,8 +655,8 @@ def create_tsd_exported_runtime_methods(metadata):
           snippet = ' = null'
     js_doc += f'{docs}\nRuntimeExports[\'{name}\']{snippet};\n'
 
-  js_doc_file = in_temp('jsdoc.js')
-  tsc_output_file = in_temp('jsdoc.d.ts')
+  file = 'jsdoc'
+  js_doc_file = in_temp(f'{file}.js')
   utils.write_file(js_doc_file, js_doc)
   tsc = shared.get_npm_cmd('tsc', missing_ok=True)
   # Prefer the npm install'd version of tsc since we know that one is compatible
@@ -668,16 +668,15 @@ def create_tsd_exported_runtime_methods(metadata):
       exit_with_error('tsc executable not found in node_modules or in $PATH')
     # Use the full path from the which command so windows can find tsc.
     tsc = [tsc]
-  cmd = tsc + ['--outFile', tsc_output_file,
-               '--skipLibCheck', # Avoid checking any of the user's types e.g. node_modules/@types.
+  cmd = [*tsc, '--skipLibCheck', # Avoid checking any of the user's types e.g. node_modules/@types.
                '--declaration',
                '--emitDeclarationOnly',
                '--allowJs', js_doc_file]
   shared.check_call(cmd, cwd=path_from_root())
-  return utils.read_file(tsc_output_file)
+  return utils.read_file(in_temp(f'{file}.d.ts'))
 
 
-def create_tsd(metadata, embind_tsd):
+def create_tsd(metadata, embind_tsd, bindgen_tsd):
   out = '// TypeScript bindings for emscripten-generated code.  Automatically generated at compile time.\n'
   if settings.EXPORTED_RUNTIME_METHODS:
     out += create_tsd_exported_runtime_methods(metadata)
@@ -694,10 +693,12 @@ def create_tsd(metadata, embind_tsd):
     out += f'  {mangled}({", ".join(arguments)}): '
     assert len(functype.returns) <= 1, 'One return type only supported'
     if functype.returns:
-      out += f'{type_to_ts_type(functype.returns[0])}'
+      ret_ts_type = type_to_ts_type(functype.returns[0])
     else:
-      out += 'void'
-    out += ';\n'
+      ret_ts_type = 'void'
+    if settings.ASYNCIFY == 2 and any(fnmatch.fnmatch(name, pat) for pat in settings.ASYNCIFY_EXPORTS):
+      ret_ts_type = f'Promise<{ret_ts_type}>'
+    out += f'{ret_ts_type};\n'
   out += '}\n'
   out += f'\n{embind_tsd}'
   # Combine all the various exports.
@@ -707,6 +708,10 @@ def create_tsd(metadata, embind_tsd):
   # Add in embind definitions.
   if embind_tsd:
     export_interfaces += ' & EmbindModule'
+  if settings.WASM_BINDGEN and bindgen_tsd:
+    for file_path in bindgen_tsd:
+      out += utils.read_file(file_path)
+    export_interfaces += ' & BindgenModule'
   out += f'export type MainModule = {export_interfaces};\n'
   if settings.MODULARIZE:
     return_type = 'MainModule'
@@ -930,6 +935,8 @@ def create_reexports(metadata):
 def install_debug_wrapper(sym):
   if settings.MINIMAL_RUNTIME or not settings.ASSERTIONS:
     return False
+  if settings.EMBIND_GEN_MODE and sym.startswith('asyncify_'):
+    return False
   # The emscripten stack functions are called very early (by writeStackCookie) before
   # the runtime is initialized so we can't create these wrappers that check for
   # runtimeInitialized.
@@ -938,7 +945,8 @@ def install_debug_wrapper(sym):
   # `__trap` can occur before the runtime is initialized since it is used in abort.
   # `emscripten_get_sbrk_ptr` can be called prior to runtime initialization by
   # the dynamic linking code.
-  return sym not in {'__trap', 'emscripten_get_sbrk_ptr'}
+  # `pthread_self` is used in `checkMailbox` after program shutdown.
+  return sym not in {'__trap', 'emscripten_get_sbrk_ptr', 'pthread_self'}
 
 
 def should_export(sym):
@@ -1056,7 +1064,7 @@ def create_receiving(function_exports, other_exports, library_symbols, aliases):
           assignment += f" = Module['{target}']"
     if is_function and install_debug_wrapper(sym):
       nargs = len(info.params)
-      receiving.append(f"  {assignment} = createExportWrapper('{sym}', {nargs});")
+      receiving.append(f"  {assignment} = createExportWrapper('{sym}', wasmExports['{sym}'], {nargs});")
     elif not is_function and info[0].kind == webassembly.ExternType.GLOBAL and not info[1].mutable:
       if settings.LEGACY_VM_SUPPORT:
         value = f"typeof wasmExports['{sym}'] == 'object' ? wasmExports['{sym}'].value : wasmExports['{sym}']"
@@ -1117,109 +1125,17 @@ def create_invoke_wrappers(metadata):
 
 
 def create_pointer_conversion_wrappers(metadata):
-  # TODO(sbc): Move this into somewhere less static.  Maybe it can become
-  # part of library.js file, even though this metadata relates specifically
-  # to native (non-JS) functions.
-  #
   # The signature format here is similar to the one used for JS libraries
   # but with the following as the only valid char:
   #  '_' - non-pointer argument (pass through unchanged)
   #  'p' - pointer/int53 argument (convert to/from BigInt)
   #  'P' - same as above but allow `undefined` too (requires extra check)
-  mapping = {
-    'sbrk': 'pP',
-    '_emscripten_stack_alloc': 'pp',
-    'emscripten_get_sbrk_ptr': 'p',
-    'emscripten_builtin_malloc': 'pp',
-    'emscripten_builtin_calloc': 'ppp',
-    'wasmfs_create_node_backend': 'pp',
-    'malloc': 'pp',
-    'realloc': 'ppp',
-    'calloc': 'ppp',
-    'webidl_malloc': 'pp',
-    'memalign': 'ppp',
-    'memcmp': '_ppp',
-    'memcpy': 'pppp',
-    '__getTypeName': 'pp',
-    'setThrew': '_p',
-    'free': '_p',
-    'webidl_free': '_p',
-    '_emscripten_stack_restore': '_p',
-    'fflush': '_p',
-    'emscripten_stack_get_end': 'p',
-    'emscripten_stack_get_base': 'p',
-    'pthread_self': 'p',
-    'emscripten_stack_get_current': 'p',
-    '__errno_location': 'p',
-    'emscripten_builtin_memalign': 'ppp',
-    'emscripten_builtin_free': 'vp',
-    'main': '__PP',
-    '__main_argc_argv': '__PP',
-    'emscripten_stack_set_limits': '_pp',
-    '__set_stack_limits': '_pp',
-    '__set_thread_state': '_p___',
-    '__cxa_can_catch': '_ppp',
-    '__cxa_increment_exception_refcount': '_p',
-    '__cxa_decrement_exception_refcount': '_p',
-    '__cxa_get_exception_ptr': 'pp',
-    '_wasmfs_write_file': '_ppp',
-    '_wasmfs_mknod': '_p__',
-    '_wasmfs_symlink': '_pp',
-    '_wasmfs_chmod': '_p_',
-    '_wasmfs_lchmod': '_p_',
-    '_wasmfs_get_cwd': 'p_',
-    '_wasmfs_identify': '_p',
-    '_wasmfs_read_file': '_ppp',
-    '_wasmfs_node_record_dirent': '_pp_',
-    '__dl_seterr': '_pp',
-    '_emscripten_run_js_on_main_thread': '__p_p_',
-    '_emscripten_run_js_on_main_thread_done': '_pp_',
-    '_emscripten_thread_exit': '_p',
-    '_emscripten_thread_init': '_p_____',
-    '_emscripten_thread_free_data': '_p',
-    '_emscripten_dlsync_self_async': '_p',
-    '_emscripten_proxy_dlsync_async': '_pp',
-    '_emscripten_wasm_worker_initialize': '__p_',
-    '_emscripten_proxy_poll_finish': '_pp_',
-    '_wasmfs_rename': '_pp',
-    '_wasmfs_readlink': '_pp',
-    '_wasmfs_truncate': '_p_',
-    '_wasmfs_mmap': 'pp____',
-    '_wasmfs_munmap': '_pp',
-    '_wasmfs_msync': '_pp_',
-    '_wasmfs_read': '__pp',
-    '_wasmfs_pread': '__pp_',
-    '_wasmfs_utime': '_p__',
-    '_wasmfs_rmdir': '_p',
-    '_wasmfs_unlink': '_p',
-    '_wasmfs_mkdir': '_p_',
-    '_wasmfs_open': '_p__',
-    '_wasmfs_mount': '_pp',
-    '_wasmfs_chdir': '_p',
-    'asyncify_start_rewind': '_p',
-    'asyncify_start_unwind': '_p',
-    '__get_exception_message': '_ppp',
-    'stbi_image_free': 'vp',
-    'stbi_load': 'ppppp_',
-    'stbi_load_from_memory': 'pp_ppp_',
-    'strerror': 'p_',
-    'emscripten_proxy_finish': '_p',
-    'emscripten_proxy_execute_queue': '_p',
-    '_emval_coro_resume': '_pp',
-    '_emval_coro_reject': '_pp',
-    'emscripten_main_runtime_thread_id': 'p',
-    '_emscripten_set_offscreencanvas_size_on_thread': '_pp__',
-    'fileno': '_p',
-    '_emscripten_run_callback_on_thread': '_pp_ppp',
-    '_emscripten_find_dylib': 'ppppp',
-  }
-
   for function in settings.SIGNATURE_CONVERSIONS:
     sym, sig = function.split(':')
-    mapping[sym] = sig
+    native_sigs[sym] = sig
 
   for f in ASAN_C_HELPERS:
-    mapping[f] = '_pp'
+    native_sigs[f] = '_pp'
 
   wrappers = '''
 // Argument name here must shadow the `wasmExports` global so
@@ -1242,8 +1158,8 @@ function applySignatureConversions(wasmExports) {
       sig = ['p' if t == 'p' else '_' for t in sig]
       sig.insert(1, 'p')
       sig = ''.join(sig)
-      mapping[symbol] = sig
-    sig = mapping.get(symbol)
+      native_sigs[symbol] = sig
+    sig = native_sigs.get(symbol)
     if sig:
       if settings.MEMORY64:
         if sig not in sigs_seen:
@@ -1257,7 +1173,7 @@ function applySignatureConversions(wasmExports) {
         wrap_functions.append(symbol)
 
   for f in wrap_functions:
-    sig = mapping[f]
+    sig = native_sigs[f]
     wrappers += f"\n  wasmExports['{f}'] = makeWrapper_{sig}(wasmExports['{f}']);"
   wrappers += '\n  return wasmExports;\n}'
 

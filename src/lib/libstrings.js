@@ -18,6 +18,14 @@ addToLibrary({
   $UTF8Decoder: "globalThis.TextDecoder && new TextDecoder()",
 #endif
 
+  $findStringEnd__docs: `
+  /**
+   * heapOrArray is either a regular array, or a JavaScript typed array view.
+   * @param {number} idx
+   * @param {number=} maxBytesToRead
+   * @param {boolean=} ignoreNul
+   * @return {number}
+   */`,
   $findStringEnd: (heapOrArray, idx, maxBytesToRead, ignoreNul) => {
     var maxIdx = idx + maxBytesToRead;
     if (ignoreNul) return maxIdx;
@@ -214,7 +222,7 @@ addToLibrary({
   $stringToUTF8__deps: ['$stringToUTF8Array'],
   $stringToUTF8: (str, outPtr, maxBytesToWrite) => {
 #if ASSERTIONS
-    assert(typeof maxBytesToWrite == 'number', 'stringToUTF8(str, outPtr, maxBytesToWrite) is missing the third parameter that specifies the length of the output buffer!');
+    assert(typeof maxBytesToWrite == 'number', 'stringToUTF8 requires a third parameter that specifies the length of the output buffer');
 #endif
     return stringToUTF8Array(str, HEAPU8, outPtr, maxBytesToWrite);
   },
@@ -313,7 +321,7 @@ addToLibrary({
   $UTF16ToString__deps: ['$UTF16Decoder', '$findStringEnd'],
   $UTF16ToString: (ptr, maxBytesToRead, ignoreNul) => {
 #if ASSERTIONS
-    assert(ptr % 2 == 0, 'Pointer passed to UTF16ToString must be aligned to two bytes!');
+    assert(ptr % 2 == 0, 'pointer passed to UTF16ToString must be 2-byte aligned');
 #endif
     var idx = {{{ getHeapOffset('ptr', 'u16') }}};
     var endIdx = findStringEnd(HEAPU16, idx, maxBytesToRead / 2, ignoreNul);
@@ -356,16 +364,16 @@ addToLibrary({
   //                    terminator will be written and nothing else.
   //                    maxBytesToWrite<2 does not write any bytes to the
   //                    output, not even the null terminator.
+  //                    Backwards compatibility: if maxBytesToWrite is not
+  //                    specified, assume an unsafe unbounded write is allowed.
   // Returns the number of bytes written, EXCLUDING the null terminator.
-  $stringToUTF16: (str, outPtr, maxBytesToWrite) => {
+  $stringToUTF16: (str, outPtr, maxBytesToWrite = 0x7FFFFFFF) => {
 #if ASSERTIONS
-    assert(outPtr % 2 == 0, 'Pointer passed to stringToUTF16 must be aligned to two bytes!');
+    assert(outPtr % 2 == 0, 'pointer passed to stringToUTF16 must be 2-byte aligned');
 #endif
 #if ASSERTIONS
-    assert(typeof maxBytesToWrite == 'number', 'stringToUTF16(str, outPtr, maxBytesToWrite) is missing the third parameter that specifies the length of the output buffer!');
+    assert(typeof maxBytesToWrite == 'number', 'stringToUTF16 requires a third parameter that specifies the length of the output buffer');
 #endif
-    // Backwards compatibility: if max bytes is not specified, assume unsafe unbounded write is allowed.
-    maxBytesToWrite ??= 0x7FFFFFFF;
     if (maxBytesToWrite < 2) return 0;
     maxBytesToWrite -= 2; // Null terminator.
     var startPtr = outPtr;
@@ -387,7 +395,7 @@ addToLibrary({
 
   $UTF32ToString: (ptr, maxBytesToRead, ignoreNul) => {
 #if ASSERTIONS
-    assert(ptr % 4 == 0, 'Pointer passed to UTF32ToString must be aligned to four bytes!');
+    assert(ptr % 4 == 0, 'pointer passed to UTF32ToString must be 2-byte aligned');
 #endif
     var str = '';
     var startIdx = {{{ getHeapOffset('ptr', 'u32') }}};
@@ -415,19 +423,19 @@ addToLibrary({
   //                    terminator will be written and nothing else.
   //                    maxBytesToWrite<4 does not write any bytes to the
   //                    output, not even the null terminator.
+  //                    Backwards compatibility: if maxBytesToWrite is not
+  //                    specified, assume an unsafe unbounded write is allowed.
   // Returns the number of bytes written, EXCLUDING the null terminator.
-  $stringToUTF32: (str, outPtr, maxBytesToWrite) => {
+  $stringToUTF32: (str, outPtr, maxBytesToWrite = 0x7FFFFFFF) => {
 #if CAN_ADDRESS_2GB
     outPtr >>>= 0;
 #endif
 #if ASSERTIONS
-    assert(outPtr % 4 == 0, 'Pointer passed to stringToUTF32 must be aligned to four bytes!');
+    assert(outPtr % 4 == 0, 'pointer passed to stringToUTF32 must be 4-byte aligned');
 #endif
 #if ASSERTIONS
-    assert(typeof maxBytesToWrite == 'number', 'stringToUTF32(str, outPtr, maxBytesToWrite) is missing the third parameter that specifies the length of the output buffer!');
+    assert(typeof maxBytesToWrite == 'number', 'stringToUTF32 requires a third parameter that specifies the length of the output buffer');
 #endif
-    // Backwards compatibility: if max bytes is not specified, assume unsafe unbounded write is allowed.
-    maxBytesToWrite ??= 0x7FFFFFFF;
     if (maxBytesToWrite < 4) return 0;
     var startPtr = outPtr;
     var endPtr = startPtr + maxBytesToWrite - 4;

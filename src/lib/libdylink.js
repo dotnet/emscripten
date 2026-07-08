@@ -834,7 +834,7 @@ var LibraryDylink = {
             if (!body.includes(argName)) break;
             args.push(argName);
           }
-          args = args.join(',');
+          args = args.join();
           var func = `(${args}) => { ${body} };`;
 #if DYLINK_DEBUG
           dbg('adding new EM_ASM constant at:', ptrToString(start));
@@ -1107,7 +1107,7 @@ var LibraryDylink = {
     if (dso) {
       // the library is being loaded or has been loaded already.
 #if ASSERTIONS
-      assert(dso.exports !== 'loading', `Attempt to load '${libName}' twice before the first load completed`);
+      assert(dso.exports !== 'loading', `attempt to load '${libName}' a second time, before the first load completed`);
 #endif
       if (!flags.global) {
         if (localScope) {
@@ -1235,7 +1235,7 @@ var LibraryDylink = {
   },
 
   $loadDylibs__internal: true,
-  $loadDylibs__deps: ['$loadDynamicLibrary', '$reportUndefinedSymbols', '$addRunDependency', '$removeRunDependency'],
+  $loadDylibs__deps: ['$loadDynamicLibrary', '$reportUndefinedSymbols'],
   $loadDylibs: async () => {
     if (!dynamicLibraries.length) {
 #if DYLINK_DEBUG
@@ -1248,7 +1248,6 @@ var LibraryDylink = {
 #if DYLINK_DEBUG
     dbg('loadDylibs:', dynamicLibraries);
 #endif
-    addRunDependency('loadDylibs');
 
     // Load binaries asynchronously
     for (var lib of dynamicLibraries) {
@@ -1260,7 +1259,6 @@ var LibraryDylink = {
 #if DYLINK_DEBUG
     dbg('loadDylibs done!');
 #endif
-    removeRunDependency('loadDylibs');
   },
 
   // void* dlopen(const char* filename, int flags);

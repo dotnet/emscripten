@@ -50,7 +50,7 @@ def get_clang_flags(user_args):
     if '-mbulk-memory' not in user_args:
       flags.append('-mbulk-memory')
 
-  if settings.MAIN_MODULE or settings.SIDE_MODULE and '-fPIC' not in user_args:
+  if (settings.MAIN_MODULE or settings.SIDE_MODULE) and '-fPIC' not in user_args:
     flags.append('-fPIC')
 
   if settings.MAIN_MODULE or settings.SIDE_MODULE or settings.LINKABLE or '-fPIC' in user_args:
@@ -98,39 +98,43 @@ def get_cflags(user_args):
 
   ports.add_cflags(cflags, settings)
 
-  def array_contains_any_of(hay, needles):
-    for n in needles:
-      if n in hay:
-        return True
+  # The rest of this function does a bunch of membership testing on user_args
+  user_args = set(user_args)
 
-  if array_contains_any_of(user_args, SIMD_INTEL_FEATURE_TOWER) or array_contains_any_of(user_args, SIMD_NEON_FLAGS):
+  def user_args_contains_any(args):
+    return any(a in user_args for a in args)
+
+  if user_args_contains_any(SIMD_INTEL_FEATURE_TOWER) or user_args_contains_any(SIMD_NEON_FLAGS):
     if '-msimd128' not in user_args and '-mrelaxed-simd' not in user_args:
       utils.exit_with_error('passing any of ' + ', '.join(SIMD_INTEL_FEATURE_TOWER + SIMD_NEON_FLAGS) + ' flags also requires passing -msimd128 (or -mrelaxed-simd)!')
     cflags += ['-D__SSE__=1']
 
-  if array_contains_any_of(user_args, SIMD_INTEL_FEATURE_TOWER[1:]):
+  if user_args_contains_any(SIMD_INTEL_FEATURE_TOWER[1:]):
     cflags += ['-D__SSE2__=1']
 
-  if array_contains_any_of(user_args, SIMD_INTEL_FEATURE_TOWER[2:]):
+  if user_args_contains_any(SIMD_INTEL_FEATURE_TOWER[2:]):
     cflags += ['-D__SSE3__=1']
 
-  if array_contains_any_of(user_args, SIMD_INTEL_FEATURE_TOWER[3:]):
+  if user_args_contains_any(SIMD_INTEL_FEATURE_TOWER[3:]):
     cflags += ['-D__SSSE3__=1']
 
-  if array_contains_any_of(user_args, SIMD_INTEL_FEATURE_TOWER[4:]):
+  if user_args_contains_any(SIMD_INTEL_FEATURE_TOWER[4:]):
     cflags += ['-D__SSE4_1__=1']
 
   # Handle both -msse4.2 and its alias -msse4.
-  if array_contains_any_of(user_args, SIMD_INTEL_FEATURE_TOWER[5:]):
+  if user_args_contains_any(SIMD_INTEL_FEATURE_TOWER[5:]):
     cflags += ['-D__SSE4_2__=1']
 
-  if array_contains_any_of(user_args, SIMD_INTEL_FEATURE_TOWER[7:]):
+  if user_args_contains_any(SIMD_INTEL_FEATURE_TOWER[7:]):
     cflags += ['-D__AVX__=1']
 
-  if array_contains_any_of(user_args, SIMD_INTEL_FEATURE_TOWER[8:]):
+  if user_args_contains_any(SIMD_INTEL_FEATURE_TOWER[8:]):
     cflags += ['-D__AVX2__=1']
 
-  if array_contains_any_of(user_args, SIMD_NEON_FLAGS):
+  if user_args_contains_any(SIMD_INTEL_FEATURE_TOWER[9:]):
+    cflags += ['-D__FMA__=1']
+
+  if user_args_contains_any(SIMD_NEON_FLAGS):
     cflags += ['-D__ARM_NEON__=1']
 
   if '-nostdinc' not in user_args:
