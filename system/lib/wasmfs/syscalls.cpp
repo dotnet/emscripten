@@ -112,6 +112,12 @@ static __wasi_errno_t writeAtOffset(OffsetHandling setOffset,
     return __WASI_ERRNO_ISDIR;
   }
 
+  // A file opened for reading only (O_RDONLY) cannot be written. POSIX write(2)
+  // returns EBADF when the file descriptor is not open for writing.
+  if ((lockedOpenFile.getFlags() & O_ACCMODE) == O_RDONLY) {
+    return __WASI_ERRNO_BADF;
+  }
+
   auto lockedFile = file->locked();
 
   if (setOffset == OffsetHandling::OpenFileState) {
@@ -127,8 +133,6 @@ static __wasi_errno_t writeAtOffset(OffsetHandling setOffset,
       offset = lockedOpenFile.getPosition();
     }
   }
-
-  // TODO: Check open file access mode for write permissions.
 
   size_t bytesWritten = 0;
   for (size_t i = 0; i < iovs_len; i++) {
@@ -198,13 +202,17 @@ static __wasi_errno_t readAtOffset(OffsetHandling setOffset,
     return __WASI_ERRNO_INVAL;
   }
 
-  // TODO: Check open file access mode for read permissions.
-
   auto file = lockedOpenFile.getFile()->dynCast<DataFile>();
 
   // If file is nullptr, then the file was not a DataFile.
   if (!file) {
     return __WASI_ERRNO_ISDIR;
+  }
+
+  // A file opened for writing only (O_WRONLY) cannot be read. POSIX read(2)
+  // returns EBADF when the file descriptor is not open for reading.
+  if ((lockedOpenFile.getFlags() & O_ACCMODE) == O_WRONLY) {
+    return __WASI_ERRNO_BADF;
   }
 
   auto lockedFile = file->locked();
@@ -568,7 +576,7 @@ int wasmfs_create_file(char* pathname, mode_t mode, backend_t backend) {
   static_assert(std::is_same_v<decltype(doOpen(0, 0, 0, 0)), unsigned int>,
                 "unexpected conversion from result of doOpen to int");
   return doOpen(
-    path::parseParent((char*)pathname), O_CREAT | O_EXCL, mode, backend);
+    path::parseParent(pathname), O_CREAT | O_EXCL | O_RDWR, mode, backend);
 }
 
 // TODO: Test this with non-AT_FDCWD values.
