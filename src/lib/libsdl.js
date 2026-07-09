@@ -1005,7 +1005,7 @@ var LibrarySDL = {
           var ly = Browser.lastTouches[touch.identifier].y / canvas.height;
           var dx = x - lx;
           var dy = y - ly;
-          if (touch['deviceID'] === undefined) touch.deviceID = SDL.TOUCH_DEFAULT_ID;
+          touch.deviceID ??= SDL.TOUCH_DEFAULT_ID;
           if (dx === 0 && dy === 0 && event.type === 'touchmove') return false; // don't send these if nothing happened
           {{{ makeSetValue('ptr', C_STRUCTS.SDL_TouchFingerEvent.type, 'SDL.DOMEventToSDLEvent[event.type]', 'i32') }}};
           {{{ makeSetValue('ptr', C_STRUCTS.SDL_TouchFingerEvent.timestamp, '_SDL_GetTicks()', 'i32') }}};
@@ -1382,8 +1382,8 @@ var LibrarySDL = {
     SDL.initFlags = initFlags;
 
     // capture all key events. we just keep down and up, but also capture press to prevent default actions
-    if (!Module['doNotCaptureKeyboard']) {
-      var keyboardListeningElement = Module['keyboardListeningElement'] || document;
+    if (!{{{ makeModuleReceiveExpr('doNotCaptureKeyboard', 'false') }}}) {
+      var keyboardListeningElement = {{{ makeModuleReceiveExpr('keyboardListeningElement', 'document') }}};
       keyboardListeningElement.addEventListener("keydown", SDL.receiveEvent);
       keyboardListeningElement.addEventListener("keyup", SDL.receiveEvent);
       keyboardListeningElement.addEventListener("keypress", SDL.receiveEvent);
@@ -2258,7 +2258,9 @@ var LibrarySDL = {
         filename = PATH_FS.resolve(filename);
         raw = Browser.preloadedImages[filename];
         if (!raw) {
+#if expectToReceiveOnModule('freePreloadedMediaOnUse')
           if (raw === null) err('Trying to reuse preloaded image, but freePreloadedMediaOnUse is set!');
+#endif
 #if STB_IMAGE
           var name = stringToUTF8OnStack(filename);
           raw = callStbImage('stbi_load', [name]);
@@ -2268,9 +2270,12 @@ var LibrarySDL = {
           warnOnce(`Cannot find preloaded image ${filename}. Consider using STB_IMAGE=1 if you want synchronous image decoding (see settings.js), or package files with --use-preload-plugins`);
           return 0;
 #endif
-        } else if (Module['freePreloadedMediaOnUse']) {
+        }
+#if expectToReceiveOnModule('freePreloadedMediaOnUse')
+        if (Module['freePreloadedMediaOnUse']) {
           Browser.preloadedImages[filename] = null;
         }
+#endif
       }
 
       var surf = SDL.makeSurface(raw.width, raw.height, 0, false, 'load:' + filename);
@@ -2282,7 +2287,7 @@ var LibrarySDL = {
         var imageData = surfData.ctx.getImageData(0, 0, surfData.width, surfData.height);
         if (raw.bpp == 4) {
           // rgba
-          imageData.data.set({{{ makeHEAPView('U8', 'raw.data', 'raw.data+raw.size') }}});
+          imageData.data.set(HEAPU8.subarray(raw.data, raw.data + raw.size));
         } else if (raw.bpp == 3) {
           // rgb
           var pixels = raw.size/3;
@@ -2437,7 +2442,7 @@ var LibrarySDL = {
       // To account for jittering in frametimes, always have multiple audio
       // buffers queued up for the audio output device.
       // This helps that we won't starve that easily if a frame takes long to complete.
-      SDL.audio.numSimultaneouslyQueuedBuffers = Module['SDL_numSimultaneouslyQueuedBuffers'] || 5;
+      SDL.audio.numSimultaneouslyQueuedBuffers = {{{ makeModuleReceiveExpr('SDL_numSimultaneouslyQueuedBuffers', 5) }}};
 
       // Pulls and queues new audio data if appropriate. This function gets
       // "over-called" in both requestAnimationFrames and setTimeouts to ensure
@@ -2746,7 +2751,9 @@ var LibrarySDL = {
       filename = PATH_FS.resolve(rwops.filename);
       var raw = Browser.preloadedAudios[filename];
       if (!raw) {
+#if expectToReceiveOnModule('freePreloadedMediaOnUse')
         if (raw === null) err('Trying to reuse preloaded audio, but freePreloadedMediaOnUse is set!');
+#endif
         if (!Module['noAudioDecoding']) warnOnce('Cannot find preloaded audio ' + filename);
 
         // see if we can read the file-contents from the in-memory FS
@@ -2757,16 +2764,18 @@ var LibrarySDL = {
           return 0;
         }
       }
+#if expectToReceiveOnModule('freePreloadedMediaOnUse')
       if (Module['freePreloadedMediaOnUse']) {
         Browser.preloadedAudios[filename] = null;
       }
+#endif
       audio = raw;
     } else if (rwops.bytes !== undefined) {
       // For Web Audio context buffer decoding, we must make a clone of the
       // audio data, but for <media> element, a view to existing data is
       // sufficient.
       if (SDL.webAudioAvailable()) {
-        bytes = HEAPU8.buffer.slice(rwops.bytes, rwops.bytes + rwops.count);
+        bytes = HEAPU8.slice(rwops.bytes, rwops.bytes + rwops.count);
       } else {
         bytes = HEAPU8.subarray(rwops.bytes, rwops.bytes + rwops.count);
       }
@@ -2776,10 +2785,14 @@ var LibrarySDL = {
 
     var arrayBuffer = bytes ? bytes.buffer || bytes : bytes;
 
+#if expectToReceiveOnModule('SDL_canPlayWithWebAudio')
     // To allow user code to work around browser bugs with audio playback on <audio> elements an Web Audio, enable
     // the user code to hook in a callback to decide on a file basis whether each file should use Web Audio or <audio> for decoding and playback.
     // In particular, see https://bugzil.la/654787 and https://bugzil.la/1012801 for tradeoffs.
-    var canPlayWithWebAudio = Module['SDL_canPlayWithWebAudio'] === undefined || Module['SDL_canPlayWithWebAudio'](filename, arrayBuffer);
+    var canPlayWithWebAudio = !Module['SDL_canPlayWithWebAudio'] || Module['SDL_canPlayWithWebAudio'](filename, arrayBuffer);
+#else
+    var canPlayWithWebAudio = true;
+#endif
 
     if (bytes !== undefined && SDL.webAudioAvailable() && canPlayWithWebAudio) {
       audio = undefined;

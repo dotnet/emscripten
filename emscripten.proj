@@ -1,27 +1,36 @@
 <Project Sdk="Microsoft.Build.Traversal">
 
   <Target Name="CreateEntryPoints" BeforeTargets="LayoutEmscripten">
-    <Exec Command="$(ProjectDir)/tools/maint/create_entry_points.py --all" />
+    <!-- Use .bat/.ps1 launchers instead of the prebuilt pylauncher.exe: the fork must
+         source-build every shipped binary (supply-chain / SBOM), so no vendored .exe. -->
+    <Exec Command="$(ProjectDir)/tools/maint/create_entry_points.py --all --bat-files" />
   </Target>
 
   <Target Name="LayoutEmscripten" BeforeTargets="Build">
     <ItemGroup>
       <EmscriptenFiles Include="$(ProjectDir)**" />
-      <EmscriptenFiles Remove="$(ProjectDir)\artifacts\**" />
-      <EmscriptenFiles Remove="$(ProjectDir)\eng\**" />
-      <EmscriptenFiles Remove="$(ProjectDir)\.*" />
-      <EmscriptenFiles Remove="$(ProjectDir)\build.*" />
-      <EmscriptenFiles Remove="$(ProjectDir)\emscripten.proj" />
-      <EmscriptenFiles Remove="$(ProjectDir)\global.json" />
-      <EmscriptenFiles Remove="$(ProjectDir)\Directory.Build.*" />
-      <EmscriptenFiles Remove="$(ProjectDir)\Makefile" />
-      <EmscriptenFiles Remove="$(ProjectDir)\NuGet.config" />
-      <EmscriptenFiles Remove="$(ProjectDir)\.circleci\**" />
-      <EmscriptenFiles Remove="$(ProjectDir)\.dotnet\**" />
-      <EmscriptenFiles Remove="$(ProjectDir)\.git\**" />
-      <EmscriptenFiles Remove="$(ProjectDir)\.packages\**" />
-      <EmscriptenFiles Remove="$(ProjectDir)\site\**" />
-      <EmscriptenFiles Remove="$(ProjectDir)\**\*.pyc" />
+      <EmscriptenFiles Remove="$(ProjectDir)artifacts\**" />
+      <EmscriptenFiles Remove="$(ProjectDir)eng\**" />
+      <EmscriptenFiles Remove="$(ProjectDir).*" />
+      <EmscriptenFiles Remove="$(ProjectDir)build.*" />
+      <EmscriptenFiles Remove="$(ProjectDir)emscripten.proj" />
+      <EmscriptenFiles Remove="$(ProjectDir)global.json" />
+      <EmscriptenFiles Remove="$(ProjectDir)Directory.Build.*" />
+      <EmscriptenFiles Remove="$(ProjectDir)Makefile" />
+      <EmscriptenFiles Remove="$(ProjectDir)NuGet.config" />
+      <EmscriptenFiles Remove="$(ProjectDir).circleci\**" />
+      <EmscriptenFiles Remove="$(ProjectDir).dotnet\**" />
+      <EmscriptenFiles Remove="$(ProjectDir).git\**" />
+      <EmscriptenFiles Remove="$(ProjectDir).packages\**" />
+      <EmscriptenFiles Remove="$(ProjectDir)site\**" />
+      <EmscriptenFiles Remove="$(ProjectDir)**\*.pyc" />
+      <EmscriptenFiles Remove="$(ProjectDir)bootstrap.py" />
+      <EmscriptenFiles Remove="$(ProjectDir)bootstrap" />
+      <EmscriptenFiles Remove="$(ProjectDir)bootstrap.bat" />
+      <EmscriptenFiles Remove="$(ProjectDir)bootstrap.ps1" />
+      <EmscriptenFiles Remove="$(ProjectDir)tools\install.py" />
+      <EmscriptenFiles Remove="$(ProjectDir)tools\maint\**" />
+      <EmscriptenFiles Remove="$(ProjectDir)tools\pylauncher\**" />
     </ItemGroup>
    <Copy SourceFiles="@(EmscriptenFiles)"
       DestinationFiles="@(EmscriptenFiles->'$(EmscriptenInstallDir)\%(RecursiveDir)%(Filename)%(Extension)')" />

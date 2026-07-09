@@ -13,6 +13,7 @@ var SyscallsLibrary = {
   ],
   $SYSCALLS: {
 #if SYSCALLS_REQUIRE_FILESYSTEM
+    currentUmask: 0o022,
     // global constants
 
     // shared utilities
@@ -79,7 +80,7 @@ var SyscallsLibrary = {
         // MAP_PRIVATE calls need not to be synced back to underlying fs
         return 0;
       }
-      var buffer = HEAPU8.slice(addr, addr + len);
+      var buffer = HEAPU8.subarray(addr, addr + len);
       FS.msync(stream, buffer, offset, len, flags);
     },
     // Just like `FS.getStream` but will throw EBADF if stream is undefined.
@@ -350,7 +351,7 @@ var SyscallsLibrary = {
     return info;
   },
   __syscall_socket__deps: ['$SOCKFS'],
-  __syscall_socket: (domain, type, protocol) => {
+  __syscall_socket: (domain, type, protocol, u1, u2, u3) => {
     var sock = SOCKFS.createSocket(domain, type, protocol);
 #if ASSERTIONS
     assert(sock.stream.fd < 64); // XXX ? select() assumes socket fd values are in 0..63
@@ -358,45 +359,49 @@ var SyscallsLibrary = {
     return sock.stream.fd;
   },
   __syscall_getsockname__deps: ['$getSocketFromFD', '$writeSockaddr', '$DNS'],
-  __syscall_getsockname: (fd, addr, addrlen, d1, d2, d3) => {
+  __syscall_getsockname: (fd, addr, len, u1, u2, u3) => {
     var sock = getSocketFromFD(fd);
     // TODO: sock.saddr should never be undefined, see TODO in websocket_sock_ops.getname
-    var errno = writeSockaddr(addr, sock.family, DNS.lookup_name(sock.saddr || '0.0.0.0'), sock.sport, addrlen);
+    var errno = writeSockaddr(addr, sock.family, DNS.lookup_name(sock.saddr || '0.0.0.0'), sock.sport, len);
 #if ASSERTIONS
     assert(!errno);
 #endif
     return 0;
   },
   __syscall_getpeername__deps: ['$getSocketFromFD', '$writeSockaddr', '$DNS'],
-  __syscall_getpeername: (fd, addr, addrlen, d1, d2, d3) => {
+  __syscall_getpeername: (fd, addr, len, u1, u2, u3) => {
     var sock = getSocketFromFD(fd);
     if (!sock.daddr) {
       return -{{{ cDefs.ENOTCONN }}}; // The socket is not connected.
     }
-    var errno = writeSockaddr(addr, sock.family, DNS.lookup_name(sock.daddr), sock.dport, addrlen);
+    var errno = writeSockaddr(addr, sock.family, DNS.lookup_name(sock.daddr), sock.dport, len);
 #if ASSERTIONS
     assert(!errno);
 #endif
     return 0;
   },
   __syscall_connect__deps: ['$getSocketFromFD', '$getSocketAddress'],
-  __syscall_connect: (fd, addr, addrlen, d1, d2, d3) => {
+  __syscall_connect: (fd, addr, len, u1, u2, u3) => {
     var sock = getSocketFromFD(fd);
-    var info = getSocketAddress(addr, addrlen);
+    var info = getSocketAddress(addr, len);
     sock.sock_ops.connect(sock, info.addr, info.port);
     return 0;
   },
   __syscall_shutdown__deps: ['$getSocketFromFD'],
-  __syscall_shutdown: (fd, how) => {
-    getSocketFromFD(fd);
+  __syscall_shutdown: (fd, how, u1, u2, u3, u4) => {
+    var sock = getSocketFromFD(fd);
+#if NODERAWSOCKETS
+    return sock.sock_ops.shutdown(sock, how);
+#else
     return -{{{ cDefs.ENOSYS }}}; // unsupported feature
+#endif
   },
   __syscall_accept4__deps: ['$getSocketFromFD', '$writeSockaddr', '$DNS'],
-  __syscall_accept4: (fd, addr, addrlen, flags, d1, d2) => {
+  __syscall_accept4: (fd, addr, len, flags, u1, u2) => {
     var sock = getSocketFromFD(fd);
     var newsock = sock.sock_ops.accept(sock);
     if (addr) {
-      var errno = writeSockaddr(addr, newsock.family, DNS.lookup_name(newsock.daddr), newsock.dport, addrlen);
+      var errno = writeSockaddr(addr, newsock.family, DNS.lookup_name(newsock.daddr), newsock.dport, len);
 #if ASSERTIONS
       assert(!errno);
 #endif
@@ -404,25 +409,25 @@ var SyscallsLibrary = {
     return newsock.stream.fd;
   },
   __syscall_bind__deps: ['$getSocketFromFD', '$getSocketAddress'],
-  __syscall_bind: (fd, addr, addrlen, d1, d2, d3) => {
+  __syscall_bind: (fd, addr, len, u1, u2, u3) => {
     var sock = getSocketFromFD(fd);
-    var info = getSocketAddress(addr, addrlen);
+    var info = getSocketAddress(addr, len);
     sock.sock_ops.bind(sock, info.addr, info.port);
     return 0;
   },
   __syscall_listen__deps: ['$getSocketFromFD'],
-  __syscall_listen: (fd, backlog) => {
+  __syscall_listen: (fd, backlog, u1, u2, u3, u4) => {
     var sock = getSocketFromFD(fd);
     sock.sock_ops.listen(sock, backlog);
     return 0;
   },
   __syscall_recvfrom__deps: ['$getSocketFromFD', '$writeSockaddr', '$DNS'],
-  __syscall_recvfrom: (fd, buf, len, flags, addr, addrlen) => {
+  __syscall_recvfrom: (fd, buf, len, flags, addr, alen) => {
     var sock = getSocketFromFD(fd);
     var msg = sock.sock_ops.recvmsg(sock, len);
     if (!msg) return 0; // socket is closed
     if (addr) {
-      var errno = writeSockaddr(addr, sock.family, DNS.lookup_name(msg.addr), msg.port, addrlen);
+      var errno = writeSockaddr(addr, sock.family, DNS.lookup_name(msg.addr), msg.port, alen);
 #if ASSERTIONS
       assert(!errno);
 #endif
@@ -431,19 +436,23 @@ var SyscallsLibrary = {
     return msg.buffer.byteLength;
   },
   __syscall_sendto__deps: ['$getSocketFromFD', '$getSocketAddress'],
-  __syscall_sendto: (fd, message, length, flags, addr, addr_len) => {
+  __syscall_sendto: (fd, buf, len, flags, addr, alen) => {
     var sock = getSocketFromFD(fd);
     if (!addr) {
       // send, no address provided
-      return FS.write(sock.stream, HEAP8, message, length);
+      return FS.write(sock.stream, HEAP8, buf, len);
     }
-    var dest = getSocketAddress(addr, addr_len);
+    var dest = getSocketAddress(addr, alen);
     // sendto an address
-    return sock.sock_ops.sendmsg(sock, HEAP8, message, length, dest.addr, dest.port);
+    return sock.sock_ops.sendmsg(sock, HEAP8, buf, len, dest.addr, dest.port);
   },
   __syscall_getsockopt__deps: ['$getSocketFromFD'],
-  __syscall_getsockopt: (fd, level, optname, optval, optlen, d1) => {
+  __syscall_getsockopt: (fd, level, optname, optval, optlen, unused) => {
     var sock = getSocketFromFD(fd);
+#if NODERAWSOCKETS
+    // The node:net backend handles all socket options.
+    return sock.sock_ops.getsockopt(sock, level, optname, optval, optlen);
+#else
     // Minimal getsockopt aimed at resolving https://github.com/emscripten-core/emscripten/issues/2211
     // so only supports SOL_SOCKET with SO_ERROR.
     if (level === {{{ cDefs.SOL_SOCKET }}}) {
@@ -455,9 +464,23 @@ var SyscallsLibrary = {
       }
     }
     return -{{{ cDefs.ENOPROTOOPT }}}; // The option is unknown at the level indicated.
+#endif
+  },
+  // Defined in JS rather than as a weak native stub so the node:net backend can
+  // provide it without a separate libstubs variation. Without that backend it
+  // just reports the option as unknown.
+  __syscall_setsockopt__deps: ['$getSocketFromFD'],
+  __syscall_setsockopt: (fd, level, optname, optval, optlen, unused) => {
+#if NODERAWSOCKETS
+    var sock = getSocketFromFD(fd);
+    return sock.sock_ops.setsockopt(sock, level, optname, optval, optlen);
+#else
+    getSocketFromFD(fd); // validate the fd (and keep this syscall's catch reachable)
+    return -{{{ cDefs.ENOPROTOOPT }}}; // The option is unknown at the level indicated.
+#endif
   },
   __syscall_sendmsg__deps: ['$getSocketFromFD', '$getSocketAddress'],
-  __syscall_sendmsg: (fd, message, flags, d1, d2, d3) => {
+  __syscall_sendmsg: (fd, message, flags, u1, u2, u3) => {
     var sock = getSocketFromFD(fd);
     var iov = {{{ makeGetValue('message', C_STRUCTS.msghdr.msg_iov, '*') }}};
     var num = {{{ makeGetValue('message', C_STRUCTS.msghdr.msg_iovlen, 'i32') }}};
@@ -488,7 +511,7 @@ var SyscallsLibrary = {
     return sock.sock_ops.sendmsg(sock, view, 0, total, addr, port);
   },
   __syscall_recvmsg__deps: ['$getSocketFromFD', '$writeSockaddr', '$DNS'],
-  __syscall_recvmsg: (fd, message, flags, d1, d2, d3) => {
+  __syscall_recvmsg: (fd, message, flags, u1, u2, u3) => {
     var sock = getSocketFromFD(fd);
     var iov = {{{ makeGetValue('message', C_STRUCTS.msghdr.msg_iov, '*') }}};
     var num = {{{ makeGetValue('message', C_STRUCTS.msghdr.msg_iovlen, 'i32') }}};
@@ -552,7 +575,7 @@ var SyscallsLibrary = {
   },
   _msync_js__i53abi: true,
   _msync_js: (addr, len, prot, flags, fd, offset) => {
-    if (isNaN(offset)) return -{{{ cDefs.EOVERFLOW }}};
+    if (isNaN(offset)) return -{{{ cDefs.EFBIG }}};
     SYSCALLS.doMsync(addr, SYSCALLS.getStreamFromFD(fd), len, flags, offset);
     return 0;
   },
@@ -560,8 +583,29 @@ var SyscallsLibrary = {
     var stream = SYSCALLS.getStreamFromFD(fd);
     return 0; // we can't do anything synchronously; the in-memory FS is already synced to
   },
+  // Derive readiness for one fd against its requested `events`: POLLNVAL for a
+  // closed/bad fd, default readable+writable for types without a poll handler.
+  // POLLERR/POLLHUP/POLLNVAL are output-only conditions reported regardless of
+  // `events` (a bad fd reports POLLNVAL even if the caller didn't ask for it).
+  $pollOne__internal: true,
+  $pollOne__deps: ['$FS'],
+  $pollOne: (fd, events) => {
+    var stream = FS.getStream(fd);
+    if (!stream) return {{{ cDefs.POLLNVAL }}};
+    // Streams without a poll handler (regular files, incl. NODERAWFS/NODEFS
+    // which leave stream_ops unset) are treated as always readable+writable.
+    var flags = stream.stream_ops?.poll
+      ? stream.stream_ops.poll(stream)
+      : {{{ cDefs.POLLIN | cDefs.POLLOUT }}};
+    return flags & (events | {{{ cDefs.POLLERR }}} | {{{ cDefs.POLLHUP }}} | {{{ cDefs.POLLNVAL }}});
+  },
   __syscall_poll__proxy: 'sync',
   __syscall_poll__async: 'auto',
+  __syscall_poll__deps: ['$doPollSync',
+#if PTHREADS || ASYNCIFY
+    '$doPollAsync',
+#endif
+  ],
   __syscall_poll: (fds, nfds, timeout) => {
 #if PTHREADS || ASYNCIFY
 #if PTHREADS
@@ -569,99 +613,102 @@ var SyscallsLibrary = {
 #else
     const isAsyncContext = true;
 #endif
-    // Enable event handlers only when the poll call is proxied from a worker.
-    // TODO: Could use `Promise.withResolvers` here if we know its available.
-    var resolve;
-    var promise = new Promise((resolve_) => { resolve = resolve_; });
-    var cleanupFuncs = [];
-    var notifyDone = false;
-    function asyncPollComplete(count) {
-      if (notifyDone) {
-        return;
-      }
-      notifyDone = true;
-#if RUNTIME_DEBUG
-      dbg('asyncPollComplete', count);
-#endif
-      cleanupFuncs.forEach(cb => cb());
-      resolve(count);
-    }
-    function makeNotifyCallback(stream, pollfd) {
-      var cb = (flags) => {
-        if (notifyDone) {
-          return;
-        }
-#if RUNTIME_DEBUG
-        dbg(`async poll notify: stream=${stream}`);
-#endif
-        var events = {{{ makeGetValue('pollfd', C_STRUCTS.pollfd.events, 'i16') }}};
-        flags &= events | {{{ cDefs.POLLERR }}} | {{{ cDefs.POLLHUP }}};
-#if ASSERTIONS
-        assert(flags)
-#endif
-        {{{ makeSetValue('pollfd', C_STRUCTS.pollfd.revents, 'flags', 'i16') }}};
-        asyncPollComplete(1);
-      }
-      cb.registerCleanupFunc = (f) => {
-        if (f) cleanupFuncs.push(f);
-      }
-      return cb;
-    }
-
+    // When proxied from a worker (PTHREADS) or able to suspend (ASYNCIFY/JSPI),
+    // block on the wait-queue. This must run for every timeout (including zero):
+    // a proxied syscall's return is awaited by the caller thread, so it has to
+    // be a Promise even for a probe.
     if (isAsyncContext) {
 #if RUNTIME_DEBUG
       dbg('async poll start');
 #endif
-      if (timeout > 0) {
-        var t = setTimeout(() => {
-#if RUNTIME_DEBUG
-          dbg('poll: timeout', timeout);
-#endif
-          asyncPollComplete(0);
-        }, timeout);
-        cleanupFuncs.push(() => clearTimeout(t));
-      }
+      return doPollAsync(fds, nfds, timeout);
     }
 #endif
-
-    var count = 0;
-    for (var i = 0; i < nfds; i++) {
-      var pollfd = fds + {{{ C_STRUCTS.pollfd.__size__ }}} * i;
-      var fd = {{{ makeGetValue('pollfd', C_STRUCTS.pollfd.fd, 'i32') }}};
-      var events = {{{ makeGetValue('pollfd', C_STRUCTS.pollfd.events, 'i16') }}};
-      var flags = {{{ cDefs.POLLNVAL }}};
-      var stream = FS.getStream(fd);
-      if (stream) {
-        if (stream.stream_ops.poll) {
-#if PTHREADS || ASYNCIFY
-          if (isAsyncContext && timeout) {
-            flags = stream.stream_ops.poll(stream, timeout, makeNotifyCallback(stream, pollfd));
-          } else
-#endif
-          flags = stream.stream_ops.poll(stream, -1);
-        } else {
-          flags = {{{ cDefs.POLLIN | cDefs.POLLOUT }}};
-        }
-      }
-      flags &= events | {{{ cDefs.POLLERR }}} | {{{ cDefs.POLLHUP }}};
-      if (flags) count++;
-      {{{ makeSetValue('pollfd', C_STRUCTS.pollfd.revents, 'flags', 'i16') }}};
-    }
-
-#if PTHREADS || ASYNCIFY
-    if (isAsyncContext) {
-      if (count || !timeout) {
-        asyncPollComplete(count);
-      }
-      return promise;
-    }
-#endif
-
+    var count = doPollSync(fds, nfds);
 #if ASSERTIONS
     if (!count && timeout != 0) warnOnce('non-zero poll() timeout not supported: ' + timeout)
 #endif
     return count;
   },
+  // Synchronous poll(): derive each fd in place, writing revents and returning
+  // the ready count. Used by the non-suspending syscall paths.
+  $doPollSync__internal: true,
+  $doPollSync__deps: ['$pollOne'],
+  $doPollSync: (fds, nfds) => {
+    var count = 0;
+    for (var i = 0, pollfd = fds; i < nfds; i++, pollfd += {{{ C_STRUCTS.pollfd.__size__ }}}) {
+      var revents = pollOne(
+        {{{ makeGetValue('pollfd', C_STRUCTS.pollfd.fd, 'i32') }}},
+        {{{ makeGetValue('pollfd', C_STRUCTS.pollfd.events, 'i16') }}});
+      if (revents) count++;
+      {{{ makeSetValue('pollfd', C_STRUCTS.pollfd.revents, 'revents', 'i16') }}};
+    }
+    return count;
+  },
+#if PTHREADS || ASYNCIFY
+  // Async poll(): derive each fd in place (like doPollSync), but if nothing is
+  // ready and `timeout` is non-zero, register one waiter per fd on its node
+  // wait-queue and re-derive the whole set on any wake (the wake flags are just
+  // the trigger), resolving then or, for a positive `timeout`, once it elapses.
+  // A negative `timeout` waits forever. Returns a Promise of the ready count.
+  $doPollAsync__internal: true,
+  $doPollAsync__deps: ['$FS', '$pollOne'],
+  $doPollAsync: (fds, nfds, timeout) => new Promise((resolve) => {
+    var regs = [];
+    var timer;
+    var done = false;
+    function derive() {
+      var count = 0;
+      for (var i = 0, pollfd = fds; i < nfds; i++, pollfd += {{{ C_STRUCTS.pollfd.__size__ }}}) {
+        var revents = pollOne(
+          {{{ makeGetValue('pollfd', C_STRUCTS.pollfd.fd, 'i32') }}},
+          {{{ makeGetValue('pollfd', C_STRUCTS.pollfd.events, 'i16') }}});
+        if (revents) count++;
+        {{{ makeSetValue('pollfd', C_STRUCTS.pollfd.revents, 'revents', 'i16') }}};
+      }
+      return count;
+    }
+    function finish(count) {
+      if (done) return;
+      done = true;
+      for (var r of regs) r.listeners.delete(r.entry);
+      if (timer) clearTimeout(timer);
+      resolve(count);
+    }
+    var count = derive();
+    if (count || !timeout) {
+      finish(count);
+    } else {
+      function recheck() {
+        if (done) return;
+        var c = derive();
+        if (c) finish(c);
+      }
+      for (var i = 0, pollfd = fds; i < nfds; i++, pollfd += {{{ C_STRUCTS.pollfd.__size__ }}}) {
+        var stream = FS.getStream({{{ makeGetValue('pollfd', C_STRUCTS.pollfd.fd, 'i32') }}});
+        if (stream) regs.push(stream.node.addListener(recheck));
+      }
+      if (timeout > 0) timer = setTimeout(() => finish(0), timeout);
+    }
+  }),
+#endif
+  // libc routes zero-timeout poll() calls here: the same synchronous
+  // readiness derivation as __syscall_poll, but as a plain import that never
+  // suspends, so probes stay callable from any context (under JSPI,
+  // __syscall_poll is a suspending import and traps when called from a stack
+  // that wasn't entered through a promising export).
+  __syscall_poll_nonblocking__proxy: 'sync',
+  __syscall_poll_nonblocking__deps: ['$doPollSync'],
+  __syscall_poll_nonblocking: (fds, nfds) => {
+    return doPollSync(fds, nfds);
+  },
+  // epoll is not yet implemented in the legacy (non-WASMFS) JS syscall layer.
+  __syscall_epoll_create1__nothrow: true,
+  __syscall_epoll_create1: (flags) => -{{{ cDefs.ENOSYS }}},
+  __syscall_epoll_ctl__nothrow: true,
+  __syscall_epoll_ctl: (epfd, op, fd, ev) => -{{{ cDefs.ENOSYS }}},
+  __syscall_epoll_pwait__nothrow: true,
+  __syscall_epoll_pwait: (epfd, ev, maxevents, timeout, sigmask, sigsetsize) => -{{{ cDefs.ENOSYS }}},
   __syscall_getcwd__deps: ['$lengthBytesUTF8', '$stringToUTF8'],
   __syscall_getcwd: (buf, size) => {
     if (size === 0) return -{{{ cDefs.EINVAL }}};
@@ -673,14 +720,14 @@ var SyscallsLibrary = {
   },
   __syscall_truncate64__i53abi: true,
   __syscall_truncate64: (path, length) => {
-    if (isNaN(length)) return -{{{ cDefs.EOVERFLOW }}};
+    if (isNaN(length)) return -{{{ cDefs.EFBIG }}};
     path = SYSCALLS.getStr(path);
     FS.truncate(path, length);
     return 0;
   },
   __syscall_ftruncate64__i53abi: true,
   __syscall_ftruncate64: (fd, length) => {
-    if (isNaN(length)) return -{{{ cDefs.EOVERFLOW }}};
+    if (isNaN(length)) return -{{{ cDefs.EFBIG }}};
     FS.ftruncate(fd, length);
     return 0;
   },
@@ -785,7 +832,8 @@ var SyscallsLibrary = {
         return stream.flags;
       case {{{ cDefs.F_SETFL }}}: {
         var arg = syscallGetVarargI();
-        stream.flags |= arg;
+        var mask = {{{ cDefs.O_APPEND | cDefs.O_ASYNC | cDefs.O_DIRECT | cDefs.O_NOATIME | cDefs.O_NONBLOCK }}};
+        stream.flags = (stream.flags & ~mask) | (arg & mask);
         return 0;
       }
       case {{{ cDefs.F_GETLK }}}: {
@@ -830,25 +878,32 @@ var SyscallsLibrary = {
     SYSCALLS.writeStatFs(buf, FS.statfsStream(stream));
     return 0;
   },
-  __syscall_fadvise64__nothrow: true,
-  __syscall_fadvise64__proxy: 'none',
-  __syscall_fadvise64: (fd, offset, len, advice) => 0,
   __syscall_openat__deps: ['$syscallGetVarargI'],
   __syscall_openat: (dirfd, path, flags, varargs) => {
     path = SYSCALLS.getStr(path);
     path = SYSCALLS.calculateAt(dirfd, path);
     var mode = varargs ? syscallGetVarargI() : 0;
+    if (flags & {{{ cDefs.O_CREAT }}}) {
+      mode &= ~SYSCALLS.currentUmask;
+    }
     return FS.open(path, flags, mode).fd;
+  },
+  __syscall_umask: (mask) => {
+    var old = SYSCALLS.currentUmask;
+    SYSCALLS.currentUmask = mask;
+    return old;
   },
   __syscall_mkdirat: (dirfd, path, mode) => {
     path = SYSCALLS.getStr(path);
     path = SYSCALLS.calculateAt(dirfd, path);
+    mode &= ~SYSCALLS.currentUmask;
     FS.mkdir(path, mode, 0);
     return 0;
   },
   __syscall_mknodat: (dirfd, path, mode, dev) => {
     path = SYSCALLS.getStr(path);
     path = SYSCALLS.calculateAt(dirfd, path);
+    mode &= ~SYSCALLS.currentUmask;
     // we don't want this in the JS API as it uses mknod to create all nodes.
     switch (mode & {{{ cDefs.S_IFMT }}}) {
       case {{{ cDefs.S_IFREG }}}:
@@ -998,7 +1053,7 @@ var SyscallsLibrary = {
   },
   __syscall_fallocate__i53abi: true,
   __syscall_fallocate: (fd, mode, offset, len) => {
-    if (isNaN(offset) || isNaN(len)) return -{{{ cDefs.EOVERFLOW }}};
+    if (isNaN(offset) || isNaN(len)) return -{{{ cDefs.EFBIG }}};
     if (mode != 0) {
       return -{{{ cDefs.ENOTSUP }}}
     }
@@ -1015,16 +1070,18 @@ var SyscallsLibrary = {
     return 0;
   },
   __syscall_dup3: (fd, newfd, flags) => {
+    if (fd === newfd) return -{{{ cDefs.EINVAL }}};
+    if (flags & ~{{{ cDefs.O_CLOEXEC }}}) return -{{{ cDefs.EINVAL }}};
     var old = SYSCALLS.getStreamFromFD(fd);
-#if ASSERTIONS
-    assert(!flags);
-#endif
-    if (old.fd === newfd) return -{{{ cDefs.EINVAL }}};
     // Check newfd is within range of valid open file descriptors.
     if (newfd < 0 || newfd >= FS.MAX_OPEN_FDS) return -{{{ cDefs.EBADF }}};
     var existing = FS.getStream(newfd);
     if (existing) FS.close(existing);
-    return FS.dupStream(old, newfd).fd;
+    var stream = FS.dupStream(old, newfd);
+    if (flags & {{{ cDefs.O_CLOEXEC }}}) {
+      stream.flags |= {{{ cDefs.O_CLOEXEC }}};
+    }
+    return stream.fd;
   },
 };
 

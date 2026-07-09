@@ -1,11 +1,9 @@
 {
   "private": true,
   "dependencies": {
-    "@babel/cli": "^7.28.6",
-    "@babel/core": "^7.29.0",
-    "@babel/preset-env": "^7.29.0",
-    "acorn": "^8.15.0",
-    "google-closure-compiler": "20240317.0.0",
+    "acorn": "^8.17.0",
+    "acorn-import-phases": "^1.0.4",
+    "google-closure-compiler": "20260629.0.0",
     "html-minifier-terser": "7.2.0"
   },
   "scripts": {

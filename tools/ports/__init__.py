@@ -166,7 +166,9 @@ def dir_is_newer(dir_a, dir_b):
 
 
 def maybe_copy(src, dest):
-  """Just like shutil.copyfile, but will do nothing if the destination already
+  """Copy a file, but only if the destination is out-of-date.
+
+  Just like shutil.copyfile, but will do nothing if the destination already
   exists and has the same contents as the source.
 
   In the case where a library is built in multiple different configurations,
@@ -182,8 +184,7 @@ def maybe_copy(src, dest):
 
 
 class Ports:
-  """emscripten-ports library management (https://github.com/emscripten-ports).
-  """
+  """emscripten-ports library management (https://github.com/emscripten-ports)."""
 
   @staticmethod
   def get_include_dir(*parts):
@@ -193,7 +194,7 @@ class Ports:
 
   @staticmethod
   def install_header_dir(src_dir, target=None):
-    """Like install_headers but recursively copied all files in a directory"""
+    """Like install_headers but recursively copied all files in a directory."""
     if not target:
       target = os.path.basename(src_dir)
     dest = Ports.get_include_dir(target)
@@ -240,7 +241,7 @@ class Ports:
           if ext in {'.c', '.cpp'} and not any((excluded in f) for excluded in exclude_files):
             srcs.append(os.path.join(root, f))
 
-    cflags = system_libs.get_base_cflags(build_dir) + ['-O2', '-I' + src_dir] + flags
+    cflags = [*system_libs.get_base_cflags(build_dir), '-O2', '-I' + src_dir, *flags]
     for include in includes:
       cflags.append('-I' + include)
 
@@ -259,7 +260,7 @@ class Ports:
         obj = os.path.join(build_dir, relpath) + '.o'
         dirname = os.path.dirname(obj)
         os.makedirs(dirname, exist_ok=True)
-        cmd = [shared.EMCC, '-c', src, '-o', obj] + cflags
+        cmd = [shared.EMCC, '-c', src, '-o', obj, *cflags]
         if utils.suffix(src) in {'.cc', '.cxx', '.cpp'}:
           cmd[0] = shared.EMXX
           cmd += cxxflags
@@ -290,7 +291,7 @@ class Ports:
 
   @staticmethod
   def fetch_port_artifact(name, url, sha512hash=None):
-    """This function only fetches the port and returns True when the port is up to date, False otherwise"""
+    """Fetch the port and return True when the port is up to date, False otherwise."""
     # To compute the sha512 hash, run `curl URL | sha512sum`.
     fullname = Ports.get_dir(name)
 
@@ -372,9 +373,22 @@ class Ports:
 
     def unpack():
       logger.info(f'unpacking port: {name}')
-      utils.safe_ensure_dirs(fullname)
-      shutil.unpack_archive(filename=fullpath, extract_dir=fullname)
-      utils.write_file(marker, url + '\n')
+      unpack_dir = fullname + '.tmp'
+      # We unpack to a temporary directory and then atomically rename it to the
+      # final destination. This ensures that the destination directory either
+      # does not exist or is 100% complete, avoiding races where other processes
+      # might see a partially unpacked directory (lacking the marker) and
+      # incorrectly assume it is invalid or needs to be cleared.
+      utils.delete_dir(unpack_dir)
+      utils.safe_ensure_dirs(unpack_dir)
+
+      shutil.unpack_archive(filename=fullpath, extract_dir=unpack_dir)
+      tmp_marker = os.path.join(unpack_dir, '.emscripten_url')
+      utils.write_file(tmp_marker, url + '\n')
+
+      # Atomically replace the target directory
+      utils.delete_dir(fullname)
+      os.replace(unpack_dir, fullname)
 
     def up_to_date():
       return os.path.exists(marker) and utils.read_file(marker).strip() == url
@@ -438,6 +452,7 @@ Cflags: {flags}
 
 class OrderedSet:
   """Partial implementation of OrderedSet.  Just enough for what we need here."""
+
   def __init__(self, items):
     self.dict = {}
     for i in items:
@@ -620,7 +635,10 @@ def clear():
 
 
 def get_libs(settings):
-  """Called add link time to calculate the list of port libraries.
+  """Return a list of library to link against for the selected ports.
+
+  This is called add link time only.
+
   Can have the side effect of building and installing the needed ports.
   """
   ret = []
@@ -636,12 +654,12 @@ def get_libs(settings):
 
 
 def add_cflags(args, settings):
-  """Called during compile phase add any compiler flags (e.g -Ifoo) needed
-  by the selected ports.  Can also add/change settings.
+  """Add any compiler flags (e.g -Ifoo) needed by the selected ports.
+
+  This is called during the compile phase.  Can also add/change settings.
 
   Can have the side effect of building and installing the needed ports.
   """
-
   # Legacy SDL1 port is not actually a port at all but builtin
   if settings.USE_SDL == 1:
     args += ['-I' + Ports.get_include_dir('SDL')]

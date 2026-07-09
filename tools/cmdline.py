@@ -26,7 +26,7 @@ from tools.settings import MEM_SIZE_SETTINGS, settings, user_settings
 from tools.toolchain_profiler import ToolchainProfiler
 from tools.utils import exit_with_error, read_file
 
-SIMD_INTEL_FEATURE_TOWER = ['-msse', '-msse2', '-msse3', '-mssse3', '-msse4.1', '-msse4.2', '-msse4', '-mavx', '-mavx2']
+SIMD_INTEL_FEATURE_TOWER = ['-msse', '-msse2', '-msse3', '-mssse3', '-msse4.1', '-msse4.2', '-msse4', '-mavx', '-mavx2', '-mfma']
 SIMD_NEON_FLAGS = ['-mfpu=neon']
 CLANG_FLAGS_WITH_ARGS = {
     '-MT', '-MF', '-MJ', '-MQ', '-D', '-U', '-o', '-x',
@@ -37,25 +37,14 @@ CLANG_FLAGS_WITH_ARGS = {
     '-current_version', '-I', '-L', '-include-pch', '-u',
     '-undefined', '-target', '-Xlinker', '-Xclang', '-z',
 }
-# These symbol names are allowed in INCOMING_MODULE_JS_API but are not part of the
-# default set.
-EXTRA_INCOMING_JS_API = [
-  'fetchSettings',
-  'logReadFiles',
-  'loadSplitModule',
-  'onMalloc',
-  'onRealloc',
-  'onFree',
-  'onSbrkGrow',
-]
+
 
 logger = logging.getLogger('args')
 
 
 @unique
 class OFormat(Enum):
-  # Output a relocatable object file.  We use this
-  # today for `-r` and `-shared`.
+  # Output a relocatable object file. i.e. `-r` linker flag
   OBJECT = auto()
   WASM = auto()
   JS = auto()
@@ -89,6 +78,7 @@ class EmccOptions:
   no_entry = False
   no_minify = False
   nodefaultlibs = False
+  openmp = False
   nolibc = False
   nostartfiles = False
   nostdlib = False
@@ -159,7 +149,7 @@ def is_valid_abspath(path_name):
 
     # return true, if the common prefix of both is equal to directory
     # e.g. /a/b/c/d.rst and directory is /a/b, the common prefix is /a/b
-    return os.path.commonprefix([root, child]) == root
+    return os.path.commonpath([root, child]) == root
 
   for valid_abspath in options.valid_abspaths:
     if in_directory(valid_abspath, path_name):
@@ -521,12 +511,6 @@ def parse_args(newargs):  # noqa: C901, PLR0912, PLR0915
                                     override=True)
     elif arg == '-mno-bulk-memory':
       feature_matrix.disable_feature(feature_matrix.Feature.BULK_MEMORY)
-    elif arg == '-msign-ext':
-      feature_matrix.enable_feature(feature_matrix.Feature.SIGN_EXT,
-                                    '-msign-ext',
-                                    override=True)
-    elif arg == '-mno-sign-ext':
-      feature_matrix.disable_feature(feature_matrix.Feature.SIGN_EXT)
     elif arg == '-mnontrapping-fptoint':
       feature_matrix.enable_feature(feature_matrix.Feature.NON_TRAPPING_FPTOINT,
                                     '-mnontrapping-fptoint',
@@ -556,6 +540,8 @@ def parse_args(newargs):  # noqa: C901, PLR0912, PLR0915
       else:
         exit_with_error(f'invalid value for --output-eol: `{style}`')
     # Record PTHREADS setting because it controls whether --shared-memory is passed to lld
+    elif arg in {'-fopenmp', '-fopenmp=libomp'}:
+      options.openmp = 1
     elif arg == '-pthread':
       settings.PTHREADS = 1
       # Also set the legacy setting name, in case use JS code depends on it.
@@ -587,6 +573,10 @@ def parse_args(newargs):  # noqa: C901, PLR0912, PLR0915
       options.relocatable = True
     elif arg.startswith('-o'):
       options.output_file = arg.removeprefix('-o')
+    elif check_flag('-m64'):
+      settings.MEMORY64 = 1
+    elif check_flag('-m32'):
+      settings.MEMORY64 = 0
     elif check_arg('-target') or check_arg('--target'):
       options.target = consume_arg()
       if options.target not in {'wasm32', 'wasm64', 'wasm64-unknown-emscripten', 'wasm32-unknown-emscripten'}:
@@ -636,9 +626,7 @@ def parse_args(newargs):  # noqa: C901, PLR0912, PLR0915
 
 
 def expand_byte_size_suffixes(value):
-  """Given a string with KB/MB size suffixes, such as "32MB", computes how
-  many bytes that is and returns it as an integer.
-  """
+  """Convert a string with KB/MB size suffix, such as "32MB", to number of bytes."""
   value = value.strip()
   match = re.match(r'^(\d+)\s*([kmgt]?b)?$', value, re.I)
   if not match:
@@ -652,9 +640,10 @@ def expand_byte_size_suffixes(value):
 
 
 def parse_symbol_list_file(contents):
-  """Parse contents of one-symbol-per-line response file.  This format can by used
-  with, for example, -sEXPORTED_FUNCTIONS=@filename and avoids the need for any
-  kind of quoting or escaping.
+  """Parse contents of one-symbol-per-line response file.
+
+  This format can by used with, for example, -sEXPORTED_FUNCTIONS=@filename and
+  avoids the need for any kind of quoting or escaping.
   """
   values = contents.splitlines()
   return [v.strip() for v in values if not v.startswith('#')]
@@ -751,12 +740,9 @@ def parse_value(text, expected_type):
 
 
 def apply_user_settings():
-  """Take a map of users settings {NAME: VALUE} and apply them to the global
-  settings object.
-  """
-
+  """Take a map of users settings {NAME: VALUE} and apply them to the global settings object."""
   # Stash a copy of all available incoming APIs before the user can potentially override it
-  settings.ALL_INCOMING_MODULE_JS_API = settings.INCOMING_MODULE_JS_API + EXTRA_INCOMING_JS_API
+  settings.ALL_INCOMING_MODULE_JS_API = settings.INCOMING_MODULE_JS_API + settings.EXTRA_INCOMING_JS_API
 
   for key, value in user_settings.items():
     if key in settings.internal_settings:
