@@ -7,7 +7,7 @@
                 "type": "git",
                 "git": {
                     "repositoryUrl": "https://github.com/emscripten-core/emscripten",
-                    "commitHash": "6ea9c28c38cdd40c1032fa04400c9d16230ee180"
+                    "commitHash": "22383d7400b93ea4404b72d6cbe0bff837b8dc22"
                 }
             },
             "developmentDependency": false
