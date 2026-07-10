@@ -97,7 +97,8 @@ MINIMAL_TASKS = [
     'libunwind-wasmexcept',
     'libnoexit',
     'bullet',
-    'libstb_image',
+    # DOTNET: disable stb_image
+    # 'libstb_image',
     'libwasmfs_no_fs',
     'libwasmfs-debug',
     'libwasm_workers-debug',
