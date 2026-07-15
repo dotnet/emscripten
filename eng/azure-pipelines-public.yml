@@ -35,7 +35,7 @@ stages:
             x64:
               assetManifestOS: linux
               assetManifestPlatform: x64
-              imagename: mcr.microsoft.com/dotnet-buildtools/prereqs:cbl-mariner-2.0
+              imagename: mcr.microsoft.com/dotnet-buildtools/prereqs:azurelinux-3.0-net10.0-cross-amd64
               rootfs: /crossrootfs/x64
               archflag: --arch x64
         pool:
