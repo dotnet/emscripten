@@ -69,7 +69,7 @@ extends:
             - bash: |
                 cd eng/
                 echo 'int main() { return 42; }' > helloworld.cpp
-                clang helloworld.cpp -o helloworld
+                clang -fuse-ld=lld helloworld.cpp -o helloworld
               displayName: Run cpp helloworld
 
             - bash: |
