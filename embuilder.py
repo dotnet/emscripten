@@ -96,7 +96,8 @@ MINIMAL_TASKS = [
     'libunwind-legacyexcept',
     'libunwind-wasmexcept',
     'libnoexit',
-    'bullet',
+    # DOTNET: disable bullet
+    #'bullet',
     # DOTNET: disable stb_image
     # 'libstb_image',
     'libwasmfs_no_fs',
