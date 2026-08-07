@@ -1,5 +1,11 @@
-# Emscripten is maintained upstream. Classify the entire repository as library
-# code instead of carrying fork-specific security changes.
+# Emscripten source is maintained upstream. Classify its source trees and entry
+# points as library code while retaining analysis for dotnet-owned infrastructure.
 path_classifiers:
   library:
-    - "**/*"
+    - "bootstrap.py"
+    - "em*.py"
+    - "eslint.config.mjs"
+    - "src/**"
+    - "system/**"
+    - "third_party/**"
+    - "tools/**"
