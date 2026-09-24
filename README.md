@@ -69,6 +69,30 @@ $ emcc hello.c -o hello.html
 You can then serve the generated `hello.html` using the `emrun` tool, or a
 web server of your choosing.
 
+## Building the .NET system-library cache
+
+In this fork, `embuilder build DOTNET` builds the system-library subset shipped by
+.NET, together with any non-system targets in `MINIMAL`. Use the generated
+`embuilder` launcher (`embuilder.bat` on Windows), as for other presets. Normal
+sysroot/header initialization and build options are unchanged.
+
+The subset excludes archives matching `lib*-ww.a` or `lib*-ww-*.a`, plus
+`libc-asan.a`, `libc-mt-asan.a`, `libprintf_long_double-asan.a`, and
+`libprintf_long_double-mt-asan.a`. These are the matching entries from the .NET
+cache exclusion policy; obsolete sanitizer archive names are not carried forward.
+Pthread variants, the `libwasm_workers` API libraries (including
+`libwasm_workers-mt.a`), and all other sanitizer archives are retained.
+
+`embuilder clear DOTNET` and `embuilder build DOTNET --force` operate on the same
+subset. With `EMCC_USE_NINJA=1`, `embuilder rebuild DOTNET` uses the existing Ninja
+rebuild behavior. `SYSTEM`, `MINIMAL`, and the other presets are unchanged.
+This selects work to build or clear; it does not prune excluded archives from an
+existing cache. Use a fresh cache when producing a subset-only package.
+
+Run the focused preset/CLI tests from a configured Emscripten checkout with
+`python -m unittest discover -s eng -p test_embuilder.py -v`. These tests exercise
+the native inventory and argument handling without compiling the full cache.
+
 
 # Contributing
 
