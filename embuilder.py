@@ -136,6 +136,17 @@ MINIMAL_PIC_TASKS = [
     'sdl3',
 ]
 
+# Archives omitted from the .NET cache. Match installed filenames rather than
+# excluding all worker APIs, pthread libraries, or sanitizer runtimes.
+DOTNET_EXCLUDED_LIBRARIES = (
+    'lib*-ww.a',
+    'lib*-ww-*.a',
+    'libc-asan.a',
+    'libc-mt-asan.a',
+    'libprintf_long_double-asan.a',
+    'libprintf_long_double-mt-asan.a',
+)
+
 PORTS = sorted(list(ports.ports_by_name.keys()) + list(ports.port_variants.keys()))
 
 temp_files = shared.get_temp_files()
@@ -154,6 +165,17 @@ Available targets:
   build / clear
         %s
 
+Target subsets:
+  SYSTEM       All system libraries
+  USER         All ports
+  MINIMAL      Minimal libraries and ports used by CI
+  MINIMAL_PIC  Additional targets for PIC testing
+  DOTNET       SYSTEM plus non-system MINIMAL targets, excluding archives
+               omitted from the .NET cache (Wasm Worker variants and selected
+               ASan-instrumented archives; not all worker or sanitizer libraries)
+  ALL          All system libraries and ports
+
+Subsets also support --force and, when using Ninja, rebuild.
 Issuing 'embuilder build ALL' causes each task to be built.
 ''' % '\n        '.join(all_tasks)
 
@@ -192,6 +214,18 @@ def get_system_tasks():
 
 def get_all_tasks():
   return get_system_tasks()[1] + PORTS
+
+
+def get_dotnet_tasks(system_libraries):
+  tasks = [
+    name for name, library in system_libraries.items()
+    if not any(fnmatch.fnmatchcase(library.get_filename(), pattern)
+               for pattern in DOTNET_EXCLUDED_LIBRARIES)
+  ]
+  # MINIMAL may also contain ports or other non-system targets. Do not re-add
+  # system libraries excluded above just because they are in MINIMAL.
+  tasks.extend(name for name in MINIMAL_TASKS if name not in system_libraries)
+  return list(dict.fromkeys(tasks))
 
 
 def handle_port_error(target, message):
@@ -264,6 +298,7 @@ def main():
   # substitute
   predefined_tasks = {
     'SYSTEM': system_tasks,
+    'DOTNET': get_dotnet_tasks(system_libraries),
     'USER': PORTS,
     'MINIMAL': MINIMAL_TASKS,
     'MINIMAL_PIC': MINIMAL_PIC_TASKS,
