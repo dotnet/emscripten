@@ -96,10 +96,8 @@ MINIMAL_TASKS = [
     'libunwind-legacyexcept',
     'libunwind-wasmexcept',
     'libnoexit',
-    # DOTNET: disable bullet
-    #'bullet',
-    # DOTNET: disable stb_image
-    # 'libstb_image',
+    'bullet',
+    'libstb_image',
     'libwasmfs_no_fs',
     'libwasmfs-debug',
     'libwasm_workers-debug',
@@ -135,6 +133,18 @@ MINIMAL_PIC_TASKS = [
     'sdl2_gfx',
     'sdl3',
 ]
+
+# Archives omitted from the .NET cache.
+DOTNET_EXCLUDED_TASKS = (
+    'bullet',
+    'libstb_image',
+    'lib*-ww',
+    'lib*-ww-*',
+    'libc-asan',
+    'libc-mt-asan',
+    'libprintf_long_double-asan',
+    'libprintf_long_double-mt-asan',
+)
 
 PORTS = sorted(list(ports.ports_by_name.keys()) + list(ports.port_variants.keys()))
 
@@ -192,6 +202,14 @@ def get_system_tasks():
 
 def get_all_tasks():
   return get_system_tasks()[1] + PORTS
+
+
+def get_dotnet_tasks():
+  _, system_tasks = get_system_tasks()
+  return [
+    name for name in system_tasks
+    if not any(fnmatch.fnmatchcase(name, pattern) for pattern in DOTNET_EXCLUDED_TASKS)
+  ]
 
 
 def handle_port_error(target, message):
@@ -264,6 +282,7 @@ def main():
   # substitute
   predefined_tasks = {
     'SYSTEM': system_tasks,
+    'DOTNET': get_dotnet_tasks(),
     'USER': PORTS,
     'MINIMAL': MINIMAL_TASKS,
     'MINIMAL_PIC': MINIMAL_PIC_TASKS,
