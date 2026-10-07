@@ -96,10 +96,8 @@ MINIMAL_TASKS = [
     'libunwind-legacyexcept',
     'libunwind-wasmexcept',
     'libnoexit',
-    # DOTNET: disable bullet
-    #'bullet',
-    # DOTNET: disable stb_image
-    # 'libstb_image',
+    'bullet',
+    'libstb_image',
     'libwasmfs_no_fs',
     'libwasmfs-debug',
     'libwasm_workers-debug',
@@ -136,15 +134,16 @@ MINIMAL_PIC_TASKS = [
     'sdl3',
 ]
 
-# Archives omitted from the .NET cache. Match installed filenames rather than
-# excluding all worker APIs, pthread libraries, or sanitizer runtimes.
-DOTNET_EXCLUDED_LIBRARIES = (
-    'lib*-ww.a',
-    'lib*-ww-*.a',
-    'libc-asan.a',
-    'libc-mt-asan.a',
-    'libprintf_long_double-asan.a',
-    'libprintf_long_double-mt-asan.a',
+# Archives omitted from the .NET cache.
+DOTNET_EXCLUDED_TASKS = (
+    'bullet',
+    'libstb_image',
+    'lib*-ww',
+    'lib*-ww-*',
+    'libc-asan',
+    'libc-mt-asan',
+    'libprintf_long_double-asan',
+    'libprintf_long_double-mt-asan',
 )
 
 PORTS = sorted(list(ports.ports_by_name.keys()) + list(ports.port_variants.keys()))
@@ -165,17 +164,6 @@ Available targets:
   build / clear
         %s
 
-Target subsets:
-  SYSTEM       All system libraries
-  USER         All ports
-  MINIMAL      Minimal libraries and ports used by CI
-  MINIMAL_PIC  Additional targets for PIC testing
-  DOTNET       SYSTEM plus non-system MINIMAL targets, excluding archives
-               omitted from the .NET cache (Wasm Worker variants and selected
-               ASan-instrumented archives; not all worker or sanitizer libraries)
-  ALL          All system libraries and ports
-
-Subsets also support --force and, when using Ninja, rebuild.
 Issuing 'embuilder build ALL' causes each task to be built.
 ''' % '\n        '.join(all_tasks)
 
@@ -216,16 +204,12 @@ def get_all_tasks():
   return get_system_tasks()[1] + PORTS
 
 
-def get_dotnet_tasks(system_libraries):
-  tasks = [
-    name for name, library in system_libraries.items()
-    if not any(fnmatch.fnmatchcase(library.get_filename(), pattern)
-               for pattern in DOTNET_EXCLUDED_LIBRARIES)
+def get_dotnet_tasks():
+  _, system_tasks = get_system_tasks()
+  return [
+    name for name in system_tasks
+    if not any(fnmatch.fnmatchcase(name, pattern) for pattern in DOTNET_EXCLUDED_TASKS)
   ]
-  # MINIMAL may also contain ports or other non-system targets. Do not re-add
-  # system libraries excluded above just because they are in MINIMAL.
-  tasks.extend(name for name in MINIMAL_TASKS if name not in system_libraries)
-  return list(dict.fromkeys(tasks))
 
 
 def handle_port_error(target, message):
@@ -298,7 +282,7 @@ def main():
   # substitute
   predefined_tasks = {
     'SYSTEM': system_tasks,
-    'DOTNET': get_dotnet_tasks(system_libraries),
+    'DOTNET': get_dotnet_tasks(),
     'USER': PORTS,
     'MINIMAL': MINIMAL_TASKS,
     'MINIMAL_PIC': MINIMAL_PIC_TASKS,

@@ -2026,14 +2026,13 @@ class libfetch(MTLibrary):
     return [utils.path_from_root('system/lib/fetch/emscripten_fetch.c')]
 
 
-# DOTNET: disable stb_image
-# class libstb_image(Library):
-#   name = 'libstb_image'
-#   never_force = True
-#   includes = ['third_party']
-# 
-#   def get_files(self):
-#     return [utils.path_from_root('system/lib/stb_image.c')]
+class libstb_image(Library):
+  name = 'libstb_image'
+  never_force = True
+  includes = ['third_party']
+
+  def get_files(self):
+    return [utils.path_from_root('system/lib/stb_image.c')]
 
 
 class libwasmfs(DebugLibrary, AsanInstrumentedLibrary, MTLibrary):
