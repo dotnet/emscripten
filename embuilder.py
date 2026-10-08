@@ -140,10 +140,12 @@ DOTNET_EXCLUDED_TASKS = (
     'libstb_image',
     'lib*-ww',
     'lib*-ww-*',
-    'libc-asan',
-    'libc-mt-asan',
-    'libprintf_long_double-asan',
-    'libprintf_long_double-mt-asan',
+    'lib*-asan',
+    'lib*-asan-*',
+    'libclang_rt.asan*',
+    'libclang_rt.lsan*',
+    'libclang_rt.sanitizer_common*',
+    'libclang_rt.ubsan*',
 )
 
 PORTS = sorted(list(ports.ports_by_name.keys()) + list(ports.port_variants.keys()))
